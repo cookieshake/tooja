@@ -1,0 +1,25 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.flox/
+
+# uv temp lock (use canonical uv.lock only)
+uv-*.lock
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# KIS spec cache + token/approval_key (secrets)
+.kis-spec/
+
+# Superpowers working docs (specs/plans) — local-only, do not commit
+docs/superpowers/
