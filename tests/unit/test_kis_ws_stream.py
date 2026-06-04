@@ -115,3 +115,33 @@ def test_pingpong_triggers_echo_send():
     out = asyncio.run(_run())
     assert out == []
     stream._ws.send.assert_called_once_with(ping_frame)
+
+
+def test_pingpong_echo_swallows_send_failure():
+    """If the WS is closing when we try to echo PINGPONG, the background task
+    must not raise an unhandled exception into the loop."""
+    import asyncio
+
+    broker = _fake_broker()
+    topic = _SubscriptionTopic(
+        tr_id="H0STCNT0", columns=_WS_QUOTE_COLUMNS, mapper=quote_from_ws_record,
+    )
+    stream = KisWsStream(
+        broker, topic, symbols=["005930"],
+        include_control=False, auto_reconnect=False, buffer_size=10,
+    )
+    stream._ws = MagicMock()
+    stream._ws.send = AsyncMock(side_effect=RuntimeError("connection closed"))
+
+    ping_frame = '{"header":{"tr_id":"PINGPONG"}}'
+
+    async def _run():
+        stream._handle_control(ping_frame)
+        # Drain pending tasks; if the create_task'd send raises uncaught,
+        # asyncio will surface it during shutdown.
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    asyncio.run(_run())
+    stream._ws.send.assert_called_once_with(ping_frame)

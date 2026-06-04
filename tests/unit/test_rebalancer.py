@@ -195,6 +195,69 @@ async def test_compute_plan_skips_below_min_order_value():
 
 
 @pytest.mark.asyncio
+async def test_expected_drift_is_post_rebalance_not_current():
+    """Regression: expected_drift means residual drift after the planned
+    trades execute, not the current (pre-rebalance) drift."""
+    from datetime import datetime, timezone
+    from tooja.core.enums import Currency
+    from tooja.core.models import Balance, Position, Quote
+    from tooja.core.money import Money
+
+    sym = Symbol(ticker="005930")
+    # Start with 0 in target sym, 1,000,000 cash, target=100%.
+    # Plan should buy ~14 shares (14*70k=980k <= 1M investable).
+    # Residual = abs((980k / 1M) - 1.0) = 0.02 — small, not 1.0.
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("1000000"), currency=Currency.KRW)],
+        positions=[],
+    )
+    quote = Quote(
+        symbol=sym,
+        price=Money(amount=Decimal("70000"), currency=Currency.KRW),
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {sym: quote}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    plan = await rb.compute_plan()
+    assert len(plan.orders) == 1
+    # 14 * 70,000 = 980,000 → residual = 20,000 / 1,000,000 = 0.02.
+    assert plan.expected_drift == Decimal("0.02")
+
+
+@pytest.mark.asyncio
+async def test_expected_drift_zero_when_already_balanced():
+    """No trades emitted → residual drift = 0 (already at target)."""
+    from tooja.core.enums import Currency
+    from tooja.core.models import Balance, Position
+    from tooja.core.money import Money
+
+    sym = Symbol(ticker="005930")
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("0"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=sym, qty=Decimal("100"),
+                avg_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+            ),
+        ],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    plan = await rb.compute_plan()
+    assert plan.orders == []
+    assert plan.expected_drift == Decimal("0")
+
+
+@pytest.mark.asyncio
 async def test_compute_plan_skips_target_with_unpriced_holding():
     """Critical regression: if an existing target position has no resolvable
     price, compute_plan must NOT generate a BUY based on actual=0. Doing so

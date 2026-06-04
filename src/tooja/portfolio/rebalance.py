@@ -108,42 +108,49 @@ class Rebalancer:
             if t.symbol in unpriced:
                 # Cannot rebalance this target without a valid price for the
                 # existing holding — issuing a BUY based on actual=0 would be
-                # catastrophic.
+                # catastrophic. Pre-rebalance weight stays as drift.
+                actual_now = current_value.get(t.symbol, Decimal(0))
+                drift += abs((actual_now / total) - t.weight)
                 continue
+
             target_value = investable * t.weight
             actual = current_value.get(t.symbol, Decimal(0))
             actual_weight = actual / total
-            drift += abs(actual_weight - t.weight)
 
             diff_value = target_value - actual
             if abs(diff_value) < self.min_order_value:
+                # No trade — residual drift = current drift.
+                drift += abs(actual_weight - t.weight)
                 continue
 
             price = current_price.get(t.symbol)
             if price is None or price <= 0:
                 price = await self._lookup_price(t.symbol, currency)
             if price is None or price <= 0:
+                drift += abs(actual_weight - t.weight)
                 continue
 
             qty_raw = (diff_value / price)
             qty = qty_raw.quantize(Decimal("1"), rounding="ROUND_DOWN") if qty_raw > 0 else \
                 (-qty_raw).quantize(Decimal("1"), rounding="ROUND_DOWN")
             if qty <= 0:
+                drift += abs(actual_weight - t.weight)
                 continue
 
             side = OrderSide.BUY if diff_value > 0 else OrderSide.SELL
             orders.append(MarketOrder(symbol=t.symbol, side=side, qty=qty))
 
-        # Symbols currently held but not in targets -> fully exit. Walk
-        # positions directly (O(N)) so we also exit positions without a
-        # current_price (current_value omits them).
+            trade_val = qty * price
+            actual_after = actual + trade_val if side is OrderSide.BUY else actual - trade_val
+            drift += abs((actual_after / total) - t.weight)
+
+        # Symbols currently held but not in targets -> fully exit (residual = 0
+        # for priced positions; unpriced positions still get a SELL but their
+        # post-trade weight is unknown so we don't contribute to drift).
         target_syms = {t.symbol for t in self.targets}
         for pos in balance.positions:
             if pos.symbol in target_syms or pos.qty <= 0:
                 continue
-            val = current_value.get(pos.symbol)
-            if val is not None:
-                drift += val / total
             orders.append(MarketOrder(symbol=pos.symbol, side=OrderSide.SELL, qty=pos.qty))
 
         return RebalancePlan(orders=orders, expected_drift=drift)

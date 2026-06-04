@@ -35,6 +35,16 @@ T = TypeVar("T")
 Mapper = Callable[[dict[str, str]], object | None]
 
 
+async def _safe_send(ws, payload: str) -> None:
+    """Send a payload that we don't care about the outcome of (e.g. PINGPONG
+    echo). Swallow ConnectionClosed and similar — the reader loop will see the
+    same condition and handle reconnection."""
+    try:
+        await ws.send(payload)
+    except Exception as e:  # noqa: BLE001 — best-effort fire-and-forget
+        logger.debug("KIS WS background send failed: %s", e)
+
+
 class _SubscriptionTopic:
     """A (tr_id, COLUMNS, mapper) bundle used by the stream."""
 
@@ -213,7 +223,7 @@ class KisWsStream(Generic[T]):
         if header.get("tr_id") == "PINGPONG":
             # KIS server-initiated keepalive. Reply with the same frame.
             if self._ws is not None:
-                asyncio.create_task(self._ws.send(raw))
+                asyncio.create_task(_safe_send(self._ws, raw))
             return []
         rt_cd = msg.get("body", {}).get("rt_cd")
         if rt_cd not in (None, "0"):
@@ -343,7 +353,7 @@ class KisOrderUpdateStream:
             try:
                 msg = json.loads(raw)
                 if msg.get("header", {}).get("tr_id") == "PINGPONG" and self._ws is not None:
-                    asyncio.create_task(self._ws.send(raw))
+                    asyncio.create_task(_safe_send(self._ws, raw))
             except json.JSONDecodeError:
                 pass
             return []
