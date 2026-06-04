@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from tooja.brokers.kis._rate_limit import TokenBucket
+from tooja.core.rate_limit import TokenBucket
 
 
 @pytest.mark.asyncio
@@ -54,7 +54,7 @@ def test_token_bucket_capacity_must_be_positive():
 
 
 def _fake_broker(*, max_retries=5, base_backoff=0.001):
-    from tooja.brokers.kis._rate_limit import RateLimitConfig
+    from tooja.core.rate_limit import RateLimitConfig
 
     class _FakeBroker:
         rate_limit = RateLimitConfig(per_sec=20, max_retries=max_retries, base_backoff=base_backoff)
@@ -154,7 +154,7 @@ async def test_call_respects_custom_max_retries(monkeypatch):
 
 
 def test_rate_limit_config_validation():
-    from tooja.brokers.kis._rate_limit import RateLimitConfig
+    from tooja.core.rate_limit import RateLimitConfig
 
     with pytest.raises(ValueError):
         RateLimitConfig(per_sec=0)
@@ -165,7 +165,7 @@ def test_rate_limit_config_validation():
 
 
 def test_kis_broker_accepts_rate_limit_config():
-    from tooja.brokers.kis._rate_limit import RateLimitConfig
+    from tooja.core.rate_limit import RateLimitConfig
     from tooja.brokers.kis.broker import KisBroker
 
     cfg = RateLimitConfig(per_sec=10, max_retries=2, base_backoff=0.05)

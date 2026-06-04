@@ -8,10 +8,9 @@ import httpx
 
 from tooja.brokers.kis.account import KisAccountClient
 from tooja.brokers.kis.analytics import KisAnalyticsClient
-from tooja.brokers.kis._rate_limit import (
-    DEFAULT_DEMO, DEFAULT_REAL, RateLimitConfig, TokenBucket,
-)
+from tooja.brokers.kis._rate_limit import DEFAULT_DEMO, DEFAULT_REAL
 from tooja.brokers.kis.auth import TokenManager
+from tooja.core.rate_limit import RateLimitConfig, TokenBucket
 from tooja.brokers.kis.credentials import KisCredentials
 from tooja.brokers.kis.info import KisInfoClient
 from tooja.brokers.kis.market import KisMarketClient
