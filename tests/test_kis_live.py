@@ -1,4 +1,4 @@
-"""Live integration tests against KIS demo (모의투자).
+"""Live integration tests against KIS demo (paper trading).
 
 Hits the real KIS demo endpoint for EVERY apiportal-defined REST endpoint
 (WS endpoints covered separately). Dangerous POST orders are dry-run only
@@ -43,7 +43,7 @@ TOKEN_CACHE = ROOT / ".kis-spec" / "token.json"
 APPROVAL_CACHE = ROOT / ".kis-spec" / "approval_key.json"
 
 REQ_DELAY = 0.55  # ~1.8 req/s — demo limit margin
-WS_WAIT_SECONDS = 4.0  # subscribe 후 메시지 기다리는 시간
+WS_WAIT_SECONDS = 4.0  # time to wait for messages after subscribe
 TOKEN_HOLDER: dict[str, str] = {}
 
 
@@ -56,11 +56,11 @@ def _http_base() -> str:
 
 
 def _ws_base() -> str:
-    # 실전 WS: ws://ops.koreainvestment.com:21000, 모의: :31000
+    # real WS: ws://ops.koreainvestment.com:21000, demo: :31000
     return "ws://ops.koreainvestment.com:31000" if _is_virtual() else "ws://ops.koreainvestment.com:21000"
 
 DANGEROUS_PATH_RE = re.compile(
-    # / 또는 - 뒤에 위험 토큰 — daytime-order, daytime-order-rvsecncl도 포함
+    # dangerous tokens following / or - — includes daytime-order, daytime-order-rvsecncl
     r"[/-](order|revise|cancel|buy|sell|revoke|rvsecncl|order-cash|order-credit|order-resv)\b",
     re.IGNORECASE,
 )
@@ -71,10 +71,10 @@ def is_dangerous(ep: dict[str, Any]) -> bool:
     if method != "POST":
         return False
     path = ep.get("accessUrl") or ""
-    # 토큰 발급/폐기는 OAuth flow에서 사용, 위험 아님
+    # token issue/revoke used in OAuth flow, not dangerous
     if "/oauth2/" in path:
         return False
-    # 매수가능/주문가능 ‘조회’는 안전 (inquire-psbl-*)
+    # inquire-psbl-* (buyable/orderable inquiry) is safe
     if "/inquire-" in path:
         return False
     return bool(DANGEROUS_PATH_RE.search(path))
@@ -104,23 +104,23 @@ def _strip_value(v: str) -> str:
     v = v.strip()
     if v.endswith(","):
         v = v[:-1].rstrip()
-    # 이중/잘못된 따옴표 — '"foo"' / '":"foo"' / '"":foo' 모두 처리
+    # handle double/broken quotes — '"foo"' / '":"foo"' / '"":foo'
     while v.startswith(('"', "'")):
         v = v[1:]
     while v.endswith(('"', "'")):
         v = v[:-1]
-    # ":"foo" 같은 누락된 선행 콜론
+    # leading colon like ":"foo"
     if v.startswith(":"):
         v = v[1:].lstrip('"\'').rstrip('"\'')
     return v.strip()
 
 
 def _parse_kv_lines(raw: str) -> dict[str, Any]:
-    """줄별 KEY:VALUE / KEY=VALUE / "KEY":"VALUE" 형식 파서. JSON 실패 시 fallback."""
+    """Per-line KEY:VALUE / KEY=VALUE / "KEY":"VALUE" parser. Fallback when JSON parsing fails."""
     out: dict[str, Any] = {}
     for line in raw.splitlines():
         line = line.strip()
-        # 최상위 JSON 잡음만 한 글자씩 제거 (값 내부 brace는 보존)
+        # strip only top-level JSON noise one char at a time (preserve inner braces)
         if line.startswith("{"):
             line = line[1:].lstrip()
         if line.endswith(","):
@@ -144,11 +144,11 @@ def parse_req_example(raw: str | None) -> dict[str, Any]:
         try:
             v = json.loads(candidate)
             if isinstance(v, dict):
-                # JSON 파싱 성공 — 값에 잔여 따옴표/콤마가 섞여 있을 수 있어 정리
+                # JSON parsed — clean up any leftover quotes/commas in values
                 return {k: (_strip_value(vv) if isinstance(vv, str) else vv) for k, vv in v.items()}
         except Exception:
             pass
-    # JSON 실패 → 줄별 KV
+    # JSON failed → fall back to per-line KV
     return _parse_kv_lines(raw)
 
 
@@ -156,7 +156,7 @@ _TEMPLATE_RE = re.compile(r"\{\{\s*([A-Z_][A-Z_0-9]*)\s*\}\}")
 
 
 def _apply_templates(val: Any) -> Any:
-    """{{HTS_ID}} 같은 템플릿을 환경값으로 치환."""
+    """Substitute templates like {{HTS_ID}} with environment values."""
     if not isinstance(val, str) or "{{" not in val:
         return val
     def sub(m: re.Match[str]) -> str:
@@ -182,7 +182,7 @@ _PLACEHOLDER_PATTERNS = [
 def substitute(val: Any) -> Any:
     if not isinstance(val, str):
         return val
-    # 일반 placeholder (XXXXXXXX 류) — CANO/계좌
+    # generic placeholders (XXXXXXXX-style) — CANO/account
     if any(p.search(val) for p in _PLACEHOLDER_PATTERNS):
         if "ACNT_PRDT" in val or len(val) == 2:
             return os.environ.get("KIS_ACNT_PRDT_CD", "01")
@@ -201,7 +201,7 @@ def _days_ago_yyyymmdd(n: int) -> str:
 
 
 def _guess_value(cd: str, ep: dict[str, Any]) -> str | None:
-    """필드명/endpoint context로 합리적 입력값 추정."""
+    """Guess a reasonable input value from field name + endpoint context."""
     u = cd.upper()
     access = ep.get("accessUrl", "")
     is_overseas = "/overseas-" in access or "overseas" in (ep.get("apiCollectionName") or "").lower()
@@ -209,7 +209,7 @@ def _guess_value(cd: str, ep: dict[str, Any]) -> str | None:
     is_futureoption = "futureoption" in access or "선물" in (ep.get("name") or "")
     is_industry_index = "/inquire-index-" in access or "comp-interest" in access
 
-    # 계좌
+    # account
     if u == "CANO":
         return os.environ.get("KIS_CANO", "")
     if u in ("ACNT_PRDT_CD", "ACNT_PRDT_NO"):
@@ -221,36 +221,36 @@ def _guess_value(cd: str, ep: dict[str, Any]) -> str | None:
     if u == "PERSONALSECKEY":
         return ""
 
-    # 종목/상품 코드
+    # symbol / product code
     if "ISCD" in u or u in ("PDNO", "INPUT_ISCD", "STOCK_CODE", "SHTN_PDNO"):
         if is_industry_index:
-            return "0001"  # 코스피
+            return "0001"  # KOSPI
         if is_overseas:
             return "AAPL"
         if is_bond:
             return "KR103502GE17"
         return "005930"
 
-    # 거래소 코드 (소문자/접미사 변형 포함)
+    # exchange code (incl. lowercase / suffixed variants)
     if u == "EXCH_DIV_CLS_CODE":
-        return "J"  # J:KRX (NX:NXT, UN:통합 — 기본은 KRX)
+        return "J"  # J:KRX (NX:NXT, UN:unified — default is KRX)
     if u == "MRKT_DIV_CLS_CODE":
-        return "1"  # 1:코스피 4:코스닥
-    # FID_COND_MRKT_DIV_CODE_<N> 멀티슬롯 — 모두 J:KRX 기본
+        return "1"  # 1:KOSPI 4:KOSDAQ
+    # FID_COND_MRKT_DIV_CODE_<N> multi-slot — all default to J:KRX
     if re.fullmatch(r"FID_COND_MRKT_DIV_CODE_[0-9]+", u):
         return "J"
     if u in ("FID_COND_MRKT_DIV_CODE", "FID_COND_MRKT_CLS_CODE"):
         if is_industry_index:
-            return "U"  # 업종
+            return "U"  # industry/sector
         if is_bond:
-            return "B"  # 채권
+            return "B"  # bonds
         if is_overseas:
-            return "N"  # 해외주식 시세
+            return "N"  # overseas stock quotes
         if is_futureoption:
-            return "F"  # 선물
+            return "F"  # futures
         if "/elw/" in access:
             return "W"  # ELW
-        return "J"  # 국내주식
+        return "J"  # domestic stock
     if u in ("EXCD",):
         return "NAS" if is_overseas else "KRX"
     if u in ("EXCG_ID_DVSN_CD",):
@@ -262,18 +262,18 @@ def _guess_value(cd: str, ep: dict[str, Any]) -> str | None:
     if u in ("TR_MKET_CLS_CODE",):
         return "J"
 
-    # 날짜 (시작/종료/조회일)
+    # dates (start / end / inquiry date)
     if u.endswith("_DT") or u.endswith("_DATE") or "DATE" in u or u.endswith("_YMD"):
-        # 시작 → 30일 전, 끝 → 오늘
+        # start → 30 days ago, end → today
         if any(s in u for s in ("STRT", "FROM", "BEGIN", "FR_DT", "_1")):
             return _days_ago_yyyymmdd(30)
         return _today_yyyymmdd()
     if u.endswith("_HOUR") or "_HOUR_" in u:
         return "100000"
 
-    # 분류/구분 — 흔한 디폴트
+    # classification / division — common defaults
     if u in ("FID_PERIOD_DIV_CODE",):
-        return "D"  # 일봉
+        return "D"  # daily candle
     if u in ("FID_ORG_ADJ_PRC",):
         return "0"
     if u in ("FID_INPUT_ISCD_1",):
@@ -290,15 +290,15 @@ def _guess_value(cd: str, ep: dict[str, Any]) -> str | None:
              "INCL_YN", "CCLD_DVSN"):
         return "N"
     if u in ("SLL_BUY_DVSN", "SLL_BUY_DVSN_CD"):
-        return "00"  # 전체
+        return "00"  # all
     if u in ("CCLD_NCCS_DVSN",):
-        return "00"  # 체결 + 미체결 전부
+        return "00"  # filled + unfilled (all)
     if u in ("SORT_SQN", "PRCS_DVSN_1"):
         return "00"
     if u == "ACNO":
         return (os.environ.get("KIS_CANO", "") + os.environ.get("KIS_ACNT_PRDT_CD", "01"))
     if u in ("ORD_GNO_BRNO", "ODNO"):
-        return ""  # 주문번호는 없음
+        return ""  # no order number
     if u in ("PRCS_DVSN",):
         return "00"
     if u in ("ORD_DVSN",):
@@ -308,32 +308,32 @@ def _guess_value(cd: str, ep: dict[str, Any]) -> str | None:
     if u in ("CUSTTYPE",):
         return "P"
 
-    # KIS 시세/순위/조건검색 공통 필드
+    # common fields for KIS quotes / rankings / conditional search
     if u in ("FID_COND_SCR_DIV_CODE",):
-        return "20171"  # 가장 흔한 화면구분코드 (endpoint별 다를 수 있음)
+        return "20171"  # most common screen division code (varies per endpoint)
     if u in ("FID_MRKT_CLS_CODE", "FID_NEWS_OFER_ENTP_CODE", "FID_ETC_CLS_CODE",
              "FID_MKOP_CLS_CODE", "FID_PW_DATA_INCU_YN", "FID_TITL_CNTT", "FID_DIV_CLS_CODE"):
         return ""
     if u in ("CTS", "AUTH", "KEYB", "CTS_AREA", "CTS_KEY", "CTS_NK", "CTS_FK"):
         return ""
     if u in ("QRY_CNT", "NREC"):
-        return "1"  # NREC: 해외 multprice 1건만
+        return "1"  # NREC: only 1 entry for overseas multprice
     if u in ("SORT_DVSN", "SORT_SQN", "FID_RANK_SORT_CLS_CODE", "GUBN", "GB1"):
         return "0"
     if u in ("GUBN2",):
         return "0"
     if u in ("NDAY",):
         return "1"
-    # 해외 multprice EXCD_01..10, SYMB_01..10 (NREC=1이므로 01만 채우면 OK)
+    # overseas multprice EXCD_01..10, SYMB_01..10 (NREC=1 so only _01 needs values)
     if u.startswith("EXCD_"):
         return "NAS" if u.endswith("_01") else ""
     if u.startswith("SYMB_"):
         return "AAPL" if u.endswith("_01") else ""
-    # 업종코드 (해외 industry-theme)
+    # industry code (overseas industry-theme)
     if u == "ICOD":
-        return "010"  # 운수창고 (대표 업종)
+        return "010"  # transportation/warehousing (representative industry)
     if u in ("INFO_GB", "CLASS_CD", "NATION_CD", "EXCHANGE_CD", "DATA_DT", "DATA_TM", "SYMB"):
-        return ""  # 해외 news-title 등 — 빈값 허용
+        return ""  # overseas news-title etc. — empty values allowed
     if u in ("QRY_TP", "QRY_GAP"):
         return "0"
     if u in ("VOL_RANG",):
@@ -367,7 +367,7 @@ def _guess_value(cd: str, ep: dict[str, Any]) -> str | None:
     if u in ("FID_PRC_CLS_CODE",):
         return "0"
     if u in ("INQR_DVSN_1", "INQR_DVSN_3"):
-        return "1"  # 1자리 사이즈 케이스
+        return "1"  # 1-char size case
     if u in ("CALL_PUT_CD",):
         return "C"
     if u in ("FID_INPUT_CNT_1", "FID_INPUT_CNT_2"):
@@ -380,7 +380,7 @@ def _guess_value(cd: str, ep: dict[str, Any]) -> str | None:
     if u in ("MINX",):
         return "0"
     if u in ("PDPR_TYPE_CD", "PRDT_TYPE_CD"):
-        return "300"  # 일반주식
+        return "300"  # common stock
     if u in ("SRS_CD", "SHT_CD"):
         return "AAPL" if is_overseas else "005930"
     if u in ("SYMB",):
@@ -392,37 +392,37 @@ def _guess_value(cd: str, ep: dict[str, Any]) -> str | None:
     if u in ("INQR_STRT_TIME", "INQR_END_TIME", "STRT_TIME", "CHEC_STRT_HOUR"):
         return "100000"
     if u in ("FID_HOUR_CLS_CODE",):
-        return "100000"  # 6자리 시간
+        return "100000"  # 6-digit time
 
     return None
 
 
-# URL별 reqExample/apiPropertys 결함 보정 (KIS apiportal spec과 실제 서버 불일치).
-# 실서버 실험으로 정답값 검증된 케이스만 등록.
+# per-URL fixes for reqExample/apiPropertys defects (KIS apiportal spec vs real server mismatch).
+# only register cases where the correct value has been verified against the live server.
 _PER_URL_OVERRIDES: dict[str, dict[str, str]] = {
-    # spec이 FID_COND_MRKT_DIV_CODE만 정의, 실서버는 _1 suffix도 함께 요구
+    # spec defines only FID_COND_MRKT_DIV_CODE, but real server also requires _1 suffix
     "/uapi/domestic-stock/v1/quotations/inquire-daily-trade-volume": {
         "FID_COND_MRKT_DIV_CODE_1": "J",
         "FID_INPUT_ISCD_1": "005930",
     },
-    # spec reqExample은 빈 값, 실서버는 실제 날짜/시간 요구
+    # spec reqExample is empty, real server requires actual date/time
     "/uapi/domestic-futureoption/v1/quotations/inquire-time-fuopchartprice": {
         "FID_INPUT_DATE_1": "__TODAY__",
         "FID_INPUT_HOUR_1": "153000",
     },
-    # apiPropertys에 안 나오는 hidden 필수 필드
+    # hidden required field not listed in apiPropertys
     "/uapi/overseas-stock/v1/ranking/market-cap": {
         "CURR_GB": "",
     },
-    # spec reqExample이 _3='U' 박았으나 실서버 거부 — J(KRX)로 강제
+    # spec reqExample hardcodes _3='U' but real server rejects it — force J (KRX)
     "/uapi/domestic-stock/v1/quotations/intstock-multprice": {
         "FID_COND_MRKT_DIV_CODE_3": "J",
     },
-    # spec reqExample은 ISCD_1만, 실서버는 ISCD_2도 요구
+    # spec reqExample has only ISCD_1, real server also requires ISCD_2
     "/uapi/domestic-stock/v1/quotations/inquire-investor-daily-by-market": {
         "FID_INPUT_ISCD_2": "KSP",
     },
-    # spec reqExample은 FUOP_DVSN (오타), apiPropertys는 FUOP_DVSN_CD가 정답
+    # spec reqExample has FUOP_DVSN (typo), apiPropertys says FUOP_DVSN_CD is correct
     "/uapi/overseas-futureoption/v1/trading/inquire-daily-ccld": {
         "FUOP_DVSN_CD": "00",
     },
@@ -430,7 +430,7 @@ _PER_URL_OVERRIDES: dict[str, dict[str, str]] = {
 
 
 def build_request(ep: dict[str, Any]) -> dict[str, Any]:
-    """reqExample → Request body dict (with placeholders substituted + spec-driven填充)."""
+    """reqExample → Request body dict (with placeholders substituted + spec-driven fill)."""
     raw = parse_req_example(ep.get("reqExample"))
 
     req_b = [p for p in (ep.get("apiPropertys") or []) if p.get("bodyType") == "req_b"]
@@ -449,7 +449,7 @@ def build_request(ep: dict[str, Any]) -> dict[str, Any]:
             continue
         normalized[k] = v
 
-    # 계좌 필드는 reqExample이 다른 사람 모의계좌를 포함할 수 있으므로 무조건 env로 덮어쓰기
+    # account fields: reqExample may contain someone else's demo account — always overwrite from env
     for cd in cd_set:
         u = cd.upper()
         if u == "CANO":
@@ -461,8 +461,8 @@ def build_request(ep: dict[str, Any]) -> dict[str, Any]:
         elif u in ("HTS_USER_ID", "USER_ID", "HTS_ID") and os.environ.get("KIS_HTS_ID"):
             normalized[cd] = os.environ["KIS_HTS_ID"]
 
-    # spec req_b 중 reqExample에 *전혀* 없는 필드만 휴리스틱 → description ex → "" 순 채움.
-    # (빈 값 ""은 KIS가 종종 의도하는 값이므로 덮어쓰지 않음)
+    # for spec req_b fields entirely absent from reqExample, fill via heuristic → description ex → "".
+    # (empty "" is often the intended KIS value, so don't overwrite it)
     for p in req_b:
         cd = p["propertyCd"]
         if cd in normalized:
@@ -473,7 +473,7 @@ def build_request(ep: dict[str, Any]) -> dict[str, Any]:
         if guess is not None:
             normalized[cd] = guess
 
-    # URL별 결함 보정 — 실서버 실험으로 검증된 정답값으로 덮어쓰기
+    # per-URL defect fixes — overwrite with values verified against the live server
     override = _PER_URL_OVERRIDES.get(ep.get("apiAccessUrl") or ep.get("accessUrl") or "")
     if override:
         for k, v in override.items():
@@ -486,14 +486,14 @@ _EX_RE = re.compile(r"(?:^|[(\s])ex[.\):\s]+\s*([A-Za-z0-9_\-]+)", re.IGNORECASE
 
 
 def _ex_from_description(desc: str) -> str | None:
-    """spec description의 "ex.) 20171" / "(ex 005930)" 등에서 첫 예시값 추출."""
+    """Extract the first example value from spec descriptions like "ex.) 20171" / "(ex 005930)"."""
     if not desc:
         return None
     m = _EX_RE.search(desc)
     if not m:
         return None
     v = m.group(1).strip()
-    # 공통 잡음 제거
+    # strip common noise
     if v.lower() in ("string", "number", "null", "n", "y"):
         return None
     return v
@@ -520,7 +520,7 @@ def _save_cached(path: Path, value: str) -> None:
 async def get_token() -> str:
     if "token" in TOKEN_HOLDER:
         return TOKEN_HOLDER["token"]
-    # 24h 이내 캐시된 토큰 재사용 — KIS는 6h 이내 재요청 시 같은 값 줌, 잦은 발급은 403
+    # reuse token cached within 24h — KIS returns the same value if reissued within 6h, frequent issuance returns 403
     cached = _load_cached(TOKEN_CACHE, 23 * 3600)
     if cached:
         TOKEN_HOLDER["token"] = cached
@@ -547,7 +547,7 @@ async def get_approval_key() -> str:
     if cached:
         TOKEN_HOLDER["approval"] = cached
         return cached
-    # /oauth2/Approval — WebSocket용 접속키 발급
+    # /oauth2/Approval — issue WebSocket approval key
     app_key = os.environ["KIS_APP_KEY"]
     app_secret = os.environ["KIS_APP_SECRET"]
     async with httpx.AsyncClient() as c:
@@ -575,19 +575,19 @@ def headers_for(token: str) -> dict[str, str]:
 
 async def call_raw(ep: dict[str, Any], body: dict[str, Any], token: str,
                    shared_client: httpx.AsyncClient) -> dict[str, Any]:
-    """spec 기반 직접 호출 — Executor 클래스 거치지 않고 raw HTTP (스키마 검증 별도).
+    """Direct spec-based call — raw HTTP without going through Executor classes (schema validation separate).
 
     Returns dict: {"status": http_status, "body": parsed_json_or_text, "tr_id": ...}
     """
     method = (ep.get("httpMethod") or "GET").upper()
     url = f"{_http_base()}{ep['accessUrl']}"
-    # 실전이면 realTrId, 모의면 virtualTrId 우선
+    # prefer realTrId for real env, virtualTrId for demo
     if _is_virtual():
         tr_id_raw = ep.get("virtualTrId") or ep.get("realTrId") or ""
     else:
         tr_id_raw = ep.get("realTrId") or ""
     tr_id = tr_id_raw.split(",")[0].strip().split("(")[0].strip()
-    # KIS TR_ID는 항상 6자 이상 (예: TTTC0081R, FHKST01010100). 한글 섞인 자유 형식인 경우 첫 6자+ 토큰 추출.
+    # KIS TR_ID is always 6+ chars (e.g. TTTC0081R, FHKST01010100). For free-form strings mixed with Korean, extract the first 6+ char token.
     if not re.fullmatch(r"[A-Z0-9]{6,}", tr_id or ""):
         m = re.search(r"[A-Z0-9]{6,}", tr_id_raw)
         tr_id = m.group(0) if m else ""
@@ -608,7 +608,7 @@ async def call_raw(ep: dict[str, Any], body: dict[str, Any], token: str,
             try:
                 body_out = r.json()
             except Exception:
-                # KIS가 broken JSON 보내는 경우 (예: 키 따옴표 누락) — 휴리스틱 복구
+                # KIS sometimes returns broken JSON (e.g. missing key quotes) — heuristic recovery
                 text = r.text
                 fixed = re.sub(r'([,{]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', text)
                 try:
@@ -628,16 +628,16 @@ def classify(result: dict[str, Any]) -> str:
     body = result["body"]
     if isinstance(body, dict):
         rt_cd = body.get("rt_cd")
-        # KIS gateway가 msg_cd/msg1 의미를 반대로 채우는 케이스 多 → 둘 다 검사
+        # KIS gateway often swaps msg_cd/msg1 semantics → check both
         text = f"{body.get('msg_cd','')} {body.get('msg1','')}"
         if rt_cd == "0":
             return "OK"
-        # rate limit / 일시 지연 (재시도 가능)
+        # rate limit / transient delay (retry-able)
         if "EGW00201" in text or "초당 거래" in text:
             return "RATE_LIMITED"
         if "90020000" in text or "서비스가 지연" in text:
             return "RATE_LIMITED"
-        # 게이트웨이가 모의에서 라우팅 못 함 = 사실상 미지원
+        # gateway cannot route in demo = effectively unsupported
         if "EGW00203" in text or "OPS라우팅" in text:
             return "DEMO_UNSUPPORTED"
         if "EGW00310" in text or "TR-ID가 유효하지 않" in text:
@@ -646,30 +646,30 @@ def classify(result: dict[str, Any]) -> str:
             return "DEMO_UNSUPPORTED"
         if "모의투자 미지원" in text:
             return "DEMO_UNSUPPORTED"
-        # paging 안내 (KIS는 다음 페이지 있을 때 MCA05762로 알림) — 본 페이지 데이터는 정상
+        # paging notice (KIS signals next-page availability with MCA05762) — current page data is fine
         if "MCA05762" in text or "조회가 계속 됩니다" in text:
             return "OK"
-        # 조회 결과 없음 — 호출은 성공, 데이터만 없음
+        # no results — call succeeded, just no data
         if "KIOK0560" in text or "조회할 내용이 없" in text:
             return "OK"
         if "APBK1631" in text or "데이터 찾을수없" in text or "조회된 데이터가 없" in text:
             return "OK"
-        # 선물옵션 계좌 미신청 (1건의 레코드 검증 실패 = 계좌 데이터 0건)
+        # futures/options account not enrolled (1-record validation failed = 0 account records)
         if "SKFT2101" in text or "정확히 1건의 레코드" in text:
             return "ACCOUNT_NOT_REGISTERED"
-        # KIS 계좌에 해당 시장(선물옵션/야간/해외선물 등) 미신청
+        # KIS account not enrolled for given market (futures/options, after-hours, overseas futures, etc.)
         if any(k in text for k in ("APAC0134", "APAC0071", "EGW00550")) or "해당하는 계좌번호가 존재하지 않" in text or "계좌번호가 존재하지" in text or "거래소 신청 계좌가 아닙니다" in text:
             return "ACCOUNT_NOT_REGISTERED"
-        # 계좌 타입 미스매치 (신용/위탁 전용 endpoint)
+        # account type mismatch (margin/cash-only endpoints)
         if "APBK1617" in text or "APAC0489" in text or "신용계좌만" in text or "위탁계좌인 경우만" in text:
             return "ACCOUNT_TYPE_MISMATCH"
-        # 진짜 인증/토큰 관련 (EGW001*만)
+        # genuine auth / token issue (EGW001* only)
         if "EGW001" in text:
             return "AUTH_ERROR"
-        # 모의투자 / 미지원 명시
+        # explicit demo / unsupported
         if ("모의" in text and ("미지원" in text or "지원하지" in text)) or "미지원" in text:
             return "DEMO_UNSUPPORTED"
-        # 입력 필드 결함 (우리 입력 빌드 문제)
+        # input field defect (issue with our request build)
         if "OPSQ" in text or "INPUT FIELD NOT FOUND" in text or "필수입력값" in text:
             return "INPUT_MISSING"
         if rt_cd == "1":
@@ -730,14 +730,14 @@ async def test_rest_endpoint(item):
         _save_results()
         return
 
-    # spec이 직접 "모의투자 미지원" 표기한 endpoint는 모의에서만 호출 전 skip (실전에서는 호출)
+    # endpoints whose spec explicitly says demo-unsupported: skip before call only in demo (still call on real)
     raw_v = (ep.get("virtualTrId") or "")
     if _is_virtual() and ("미지원" in raw_v or "지원하지" in raw_v):
         record["category"] = "DEMO_UNSUPPORTED"
         record["note"] = f"spec virtualTrId: {raw_v}"
         RESULTS.append(record); _save_results(); return
 
-    # OAuth 카테고리는 본 테스트 라운드에서 skip — 토큰은 setup에서 처리됨, 재호출 시 403
+    # skip OAuth category this round — token handled in setup, re-calling returns 403
     if slug == "oauth":
         record["category"] = "SKIPPED_OAUTH"
         record["note"] = "token already cached; OAuth endpoints excluded from API sweep"
@@ -750,7 +750,7 @@ async def test_rest_endpoint(item):
     async with httpx.AsyncClient() as http_client:
         result = await call_raw(ep, body, token, http_client)
         record["category"] = classify(result)
-        # RATE_LIMITED는 1회 재시도 (1.5초 대기)
+        # retry once on RATE_LIMITED (wait 1.5s)
         if record["category"] == "RATE_LIMITED":
             await asyncio.sleep(1.5)
             result = await call_raw(ep, body, token, http_client)
@@ -769,23 +769,23 @@ async def test_rest_endpoint(item):
 
 
 def _ws_tr_key(ep: dict[str, Any]) -> str:
-    """endpoint별 합리적인 tr_key 추정. 대부분 종목코드 또는 HTS_ID."""
+    """Guess a reasonable tr_key per endpoint. Usually a symbol code or HTS_ID."""
     name = ep.get("name", "")
     access = ep.get("accessUrl", "")
     tr_id = (ep.get("realTrId") or "")
-    # 해외주식: DNASAAPL (거래소 4자리 + 티커)
+    # overseas stocks: DNASAAPL (4-char exchange + ticker)
     if "해외주식" in name or "/overseas-stock" in access or "overseas_stock" in (ep.get("apiCollectionName") or ""):
         return "DNASAAPL"
-    # 국내선물옵션: 코스피200 선물
+    # domestic futures/options: KOSPI200 futures
     if "선물옵션" in name or tr_id.startswith("H0I") or tr_id.startswith("H0Z") or tr_id.startswith("H0M") or tr_id.startswith("H0C"):
         return "101W12"
-    # 채권: 임의 ISIN 또는 종목 — KIS 모의는 미지원이 대부분
+    # bonds: arbitrary ISIN or symbol — KIS demo mostly unsupported
     if "채권" in name or "/bond" in access:
         return "KR103502GE17"
-    # 통보(체결/주문): HTS ID 필요 — placeholder
+    # notifications (fill/order): needs HTS ID — placeholder
     if "통보" in name or "체결통보" in name or tr_id.endswith("0CNI0") or tr_id.endswith("0CNI9"):
         return os.environ.get("KIS_HTS_ID", "user_id")
-    # 기본: 삼성전자
+    # default: Samsung Electronics
     return "005930"
 
 
@@ -807,14 +807,14 @@ async def test_ws_endpoint(item):
         "method": "WS", "tr_id": tr_id, "tr_key": tr_key,
     }
 
-    # 체결통보 TR (HTS_ID 필요) — spec req_b에 HTS_USER_ID/USER_ID 있거나 name에 "통보" 포함 → skip
+    # fill-notification TRs (need HTS_ID) — skip if spec req_b has HTS_USER_ID/USER_ID or name contains "통보"
     name = ep.get("name") or ""
     needs_hts = ("통보" in name or "체결통보" in name or
                  any(p.get("propertyCd","").upper() in ("HTS_USER_ID","USER_ID","HTS_ID")
                      for p in (ep.get("apiPropertys") or [])))
     if needs_hts and not os.environ.get("KIS_HTS_ID"):
         record["category"] = "SKIPPED_HTS_ID"
-        record["note"] = "set KIS_HTS_ID to test 체결통보 TRs"
+        record["note"] = "set KIS_HTS_ID to test fill-notification TRs"
         RESULTS.append(record); _save_results(); return
 
     try:
@@ -867,7 +867,7 @@ async def test_ws_endpoint(item):
                     elif "TR" in text and ("유효" in text or "ID" in text):
                         record["category"] = "WS_DEMO_UNSUPPORTED"
                     elif "OPSP0017" in text or "htsid가잘못" in text:
-                        # KIS 모의가 해당 시장 체결통보를 거절 — 시장별 미신청 또는 모의 미지원
+                        # KIS demo rejects fill notifications for this market — market-level not enrolled or demo unsupported
                         record["category"] = "WS_DEMO_UNSUPPORTED"
                     else:
                         record["category"] = "WS_API_ERROR"
@@ -889,7 +889,7 @@ async def test_ws_endpoint(item):
             record["category"] = "WS_CONNECT_FAIL"
             record["error"] = f"{type(e).__name__}: {e}"[:200]
 
-        # KIS WS는 동일 approval_key로 너무 잦은 reconnect를 차단. 약간의 간격 둠
+        # KIS WS blocks too-frequent reconnects with the same approval_key — add a small delay
         await asyncio.sleep(0.6)
     finally:
         RESULTS.append(record)

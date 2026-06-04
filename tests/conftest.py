@@ -22,9 +22,9 @@ def _load_dotenv(path: Path) -> None:
 
 
 def _resolve_env_profile() -> None:
-    """KIS_ENV(demo|real)에 따라 KIS_<PROFILE>_*를 KIS_*에 채움.
+    """Promote KIS_<PROFILE>_* into KIS_* based on KIS_ENV (demo|real).
 
-    이미 KIS_* 직접 설정된 값이 있으면 그대로 둠 (덮어쓰기 X).
+    Pre-set KIS_* values are left untouched (no overwrite).
     """
     env = os.environ.get("KIS_ENV", "demo").lower()
     profile = "REAL" if env == "real" else "DEMO"

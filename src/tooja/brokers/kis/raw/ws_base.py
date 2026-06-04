@@ -32,9 +32,9 @@ TResponse = TypeVar("TResponse", bound=BaseModel)
 
 
 class WsSubscriber(Generic[TResponse]):
-    """단일 KIS 실시간 TR 구독기.
+    """Subscriber for a single KIS realtime TR.
 
-    Subclass sets ``TR_ID``, ``RESPONSE_TYPE``, ``COLUMNS`` (응답 필드 순서).
+    Subclass sets ``TR_ID``, ``RESPONSE_TYPE``, ``COLUMNS`` (response field order).
     """
 
     TR_ID: ClassVar[str]
@@ -66,7 +66,7 @@ class WsSubscriber(Generic[TResponse]):
         })
 
     async def subscribe(self) -> AsyncGenerator[TResponse, None]:
-        """접속, 구독, 메시지 yield. ``async for`` 종료 시 자동 unsubscribe."""
+        """Connect, subscribe, yield messages. Auto-unsubscribes when ``async for`` exits."""
         async with websockets.connect(self.url) as ws:
             await ws.send(self._subscribe_message(TR_TYPE_SUBSCRIBE))
             try:
@@ -84,11 +84,11 @@ class WsSubscriber(Generic[TResponse]):
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8", errors="replace")
 
-        # 제어 프레임 (PINGPONG / SUBSCRIBE ACK 등)은 JSON
+        # Control frames (PINGPONG / SUBSCRIBE ACK / ...) arrive as JSON.
         if raw.startswith("{"):
             return self._handle_control(raw)
 
-        # 데이터 프레임: <flag>|<tr_id>|<count>|<body>
+        # Data frame: <flag>|<tr_id>|<count>|<body>
         try:
             flag, tr_id, count_str, body = raw.split("|", 3)
         except ValueError:

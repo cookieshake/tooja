@@ -1,4 +1,4 @@
-"""Smoke test: KIS 모의투자 토큰 발급 + 시세 호출.
+"""Smoke test: issue a KIS demo token and call a quote endpoint.
 
 Run: uv run python scripts/smoke_test.py
 
@@ -33,7 +33,7 @@ def load_env(path: Path) -> dict[str, str]:
             continue
         k, _, v = line.partition("=")
         env[k.strip()] = v.strip()
-    # KIS_ENV에 따라 KIS_<PROFILE>_* → KIS_*에 채움
+    # Promote KIS_<PROFILE>_* into KIS_* based on KIS_ENV.
     profile = "REAL" if env.get("KIS_ENV", "demo").lower() == "real" else "DEMO"
     for key in CANONICAL_KEYS:
         target = f"KIS_{key}"
@@ -50,7 +50,7 @@ async def main() -> None:
     is_virtual = env.get("KIS_ENV", "demo") == "demo"
     print(f"env: {'demo (virtual)' if is_virtual else 'real'}")
 
-    # 1. 토큰 발급
+    # 1. Issue access token.
     tok = await TokenpExecutor(
         request=TokenpRequest(
             grant_type="client_credentials",
@@ -62,13 +62,13 @@ async def main() -> None:
     token = tok.access_token
     print(f"[1] access_token: {token[:24]}... (expires_in={tok.expires_in})")
 
-    # 2. 시세 조회 — 삼성전자 005930 (KRX)
+    # 2. Quote lookup — Samsung Electronics 005930 (KRX).
     headers = {
         "authorization": f"Bearer {token}",
         "appkey": app_key,
         "appsecret": app_secret,
     }
-    print("\n[2] 삼성전자 시세 (005930, KRX)")
+    print("\n[2] Quote: Samsung Electronics (005930, KRX)")
     price_resp = await InquirePriceExecutor(
         request=InquirePriceRequest(
             FID_COND_MRKT_DIV_CODE="J",  # KRX
@@ -88,13 +88,13 @@ async def main() -> None:
                 if k in data:
                     print(f"    {k:14s} = {data[k]}")
 
-    # 3. 잔고 조회 (모의)
+    # 3. Balance lookup (demo).
     cano = env.get("KIS_CANO")
     acnt_prdt_cd = env.get("KIS_ACNT_PRDT_CD", "01")
     if not cano:
-        print("\n[3] 잔고 조회: skipped (KIS_CANO 미설정)")
+        print("\n[3] Balance: skipped (KIS_CANO not set)")
         return
-    print(f"\n[3] 잔고 조회 ({cano}-{acnt_prdt_cd})")
+    print(f"\n[3] Balance ({cano}-{acnt_prdt_cd})")
     bal_resp = await InquireBalanceExecutor(
         request=InquireBalanceRequest(
             CANO=cano,
@@ -114,7 +114,7 @@ async def main() -> None:
     ).execute()
     print(f"  rt_cd={bal_resp.rt_cd} msg={bal_resp.msg1}")
 
-    print(f"  output1 (보유 종목, {len(bal_resp.output1)}건):")
+    print(f"  output1 (holdings, {len(bal_resp.output1)} rows):")
     for h in bal_resp.output1[:5]:
         print(f"    {h.pdno} {h.prdt_name:20s} qty={h.hldg_qty} avg={h.pchs_avg_pric} cur={h.prpr} pnl={h.evlu_pfls_amt}")
     if len(bal_resp.output1) > 5:
@@ -122,7 +122,7 @@ async def main() -> None:
 
     if bal_resp.output2:
         s = bal_resp.output2[0]
-        print("  output2 (계좌 요약):")
+        print("  output2 (account summary):")
         for k in ("dnca_tot_amt", "tot_evlu_amt", "nass_amt", "pchs_amt_smtl_amt", "evlu_amt_smtl_amt", "evlu_pfls_smtl_amt"):
             v = getattr(s, k, None)
             print(f"    {k:24s} = {v}")
