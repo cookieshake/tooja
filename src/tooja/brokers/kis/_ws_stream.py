@@ -1,0 +1,222 @@
+"""Unified KIS WebSocket subscription stream.
+
+One WS connection per stream instance. Each symbol subscribed adds a per-tr_id
+subscribe frame. Incoming pipe-delimited frames are split into records and
+handed to a per-tr_id mapper to produce Quote / Trade / Orderbook / OrderUpdate.
+
+Reconnect on close (when auto_reconnect=True) by reissuing all currently-known
+subscribes; the consumer sees a StreamControlEvent(kind="reconnected").
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, AsyncIterator, Callable, Generic, TypeVar
+
+import websockets
+from websockets.exceptions import ConnectionClosed
+
+from tooja.brokers.kis.raw.ws_base import (
+    REAL_WS_URL, TR_TYPE_SUBSCRIBE, TR_TYPE_UNSUBSCRIBE, VIRTUAL_WS_URL,
+)
+from tooja.core.errors import BrokerError
+from tooja.core.models import StreamControlEvent, Symbol
+
+if TYPE_CHECKING:
+    from tooja.brokers.kis.broker import KisBroker
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+Mapper = Callable[[dict[str, str]], object | None]
+
+
+class _SubscriptionTopic:
+    """A (tr_id, COLUMNS, mapper) bundle used by the stream."""
+
+    def __init__(self, tr_id: str, columns: tuple[str, ...], mapper: Mapper):
+        self.tr_id = tr_id
+        self.columns = columns
+        self.mapper = mapper
+
+
+class KisWsStream(Generic[T]):
+    """Base implementation of `_SymbolStream`-shaped interface for KIS WS.
+
+    Subclasses pick a `_SubscriptionTopic` and message type T.
+    """
+
+    def __init__(
+        self,
+        broker: "KisBroker",
+        topic: _SubscriptionTopic,
+        symbols: list[Symbol | str],
+        *,
+        include_control: bool,
+        auto_reconnect: bool,
+        buffer_size: int,
+    ):
+        self._broker = broker
+        self._topic = topic
+        self._include_control = include_control
+        self._auto_reconnect = auto_reconnect
+        self._buffer_size = buffer_size
+        self._symbols: set[Symbol] = {self._as_symbol(s) for s in symbols}
+        self._ws: websockets.WebSocketClientProtocol | None = None
+        self._queue: asyncio.Queue[T] = asyncio.Queue(maxsize=buffer_size)
+        self._reader_task: asyncio.Task | None = None
+        self._url: str = VIRTUAL_WS_URL if broker.is_virtual else REAL_WS_URL
+        self._closed = False
+
+    @staticmethod
+    def _as_symbol(s: Symbol | str) -> Symbol:
+        return s if isinstance(s, Symbol) else Symbol.parse(s)
+
+    @property
+    def symbols(self) -> frozenset[Symbol]:
+        return frozenset(self._symbols)
+
+    @property
+    def auto_reconnect(self) -> bool:
+        return self._auto_reconnect
+
+    async def subscribe(self, symbol: Symbol | str) -> None:
+        sym = self._as_symbol(symbol)
+        if sym in self._symbols and self._ws is not None:
+            return
+        self._symbols.add(sym)
+        if self._ws is not None:
+            await self._send_subscribe(sym, TR_TYPE_SUBSCRIBE)
+            if self._include_control:
+                await self._queue.put(self._control("subscribed", [sym]))  # type: ignore[arg-type]
+
+    async def unsubscribe(self, symbol: Symbol | str) -> None:
+        sym = self._as_symbol(symbol)
+        if sym not in self._symbols:
+            return
+        self._symbols.discard(sym)
+        if self._ws is not None:
+            await self._send_subscribe(sym, TR_TYPE_UNSUBSCRIBE)
+            if self._include_control:
+                await self._queue.put(self._control("unsubscribed", [sym]))  # type: ignore[arg-type]
+
+    async def __aenter__(self) -> "KisWsStream[T]":
+        await self._connect_and_subscribe()
+        self._reader_task = asyncio.create_task(self._reader_loop())
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        self._closed = True
+        if self._reader_task is not None:
+            self._reader_task.cancel()
+            try:
+                await self._reader_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._ws is not None:
+            await self._ws.close()
+            self._ws = None
+
+    def __aiter__(self) -> AsyncIterator[T]:
+        return self
+
+    async def __anext__(self) -> T:
+        if self._closed and self._queue.empty():
+            raise StopAsyncIteration
+        return await self._queue.get()
+
+    async def _connect_and_subscribe(self) -> None:
+        approval = await self._broker.get_approval_key()
+        self._approval = approval
+        self._ws = await websockets.connect(self._url)
+        for sym in list(self._symbols):
+            await self._send_subscribe(sym, TR_TYPE_SUBSCRIBE)
+
+    async def _send_subscribe(self, sym: Symbol, tr_type: str) -> None:
+        if self._ws is None:
+            raise BrokerError("KIS WS not connected", broker="kis")
+        msg = json.dumps({
+            "header": {
+                "approval_key": self._approval,
+                "custtype": "P",
+                "tr_type": tr_type,
+                "content-type": "utf-8",
+            },
+            "body": {"input": {"tr_id": self._topic.tr_id, "tr_key": sym.ticker}},
+        })
+        await self._ws.send(msg)
+
+    async def _reader_loop(self) -> None:
+        while not self._closed:
+            try:
+                if self._ws is None:
+                    await self._connect_and_subscribe()
+                assert self._ws is not None
+                async for raw in self._ws:
+                    for item in self._parse(raw):
+                        await self._queue.put(item)
+            except ConnectionClosed:
+                if not self._auto_reconnect or self._closed:
+                    break
+                logger.warning("KIS WS closed — reconnecting")
+                self._ws = None
+                if self._include_control:
+                    await self._queue.put(self._control("disconnected", []))  # type: ignore[arg-type]
+                await asyncio.sleep(1.0)
+                continue
+            except Exception as e:
+                logger.exception("KIS WS reader loop error: %s", e)
+                if not self._auto_reconnect or self._closed:
+                    break
+                self._ws = None
+                await asyncio.sleep(1.0)
+                continue
+
+    def _parse(self, raw: str | bytes) -> list:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        if raw.startswith("{"):
+            return self._handle_control(raw)
+        try:
+            flag, tr_id, count_str, body = raw.split("|", 3)
+        except ValueError:
+            return []
+        if tr_id != self._topic.tr_id:
+            return []
+        try:
+            count = int(count_str)
+        except ValueError:
+            count = 1
+        per = len(self._topic.columns)
+        tokens = body.split("^")
+        out: list = []
+        for i in range(count):
+            chunk = tokens[i * per:(i + 1) * per]
+            if len(chunk) != per:
+                break
+            record = dict(zip(self._topic.columns, chunk))
+            mapped = self._topic.mapper(record)
+            if mapped is not None:
+                out.append(mapped)
+        return out
+
+    def _handle_control(self, raw: str) -> list:
+        try:
+            msg = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        rt_cd = msg.get("body", {}).get("rt_cd")
+        if rt_cd not in (None, "0"):
+            logger.error("KIS WS control error: %s", msg)
+        return []
+
+    def _control(self, kind: str, syms: list[Symbol]) -> StreamControlEvent:
+        return StreamControlEvent(
+            kind=kind,  # type: ignore[arg-type]
+            time=datetime.now(timezone.utc),
+            symbols_affected=syms,
+        )

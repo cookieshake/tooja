@@ -8,6 +8,7 @@ import httpx
 
 from tooja.brokers.kis.account import KisAccountClient
 from tooja.brokers.kis.analytics import KisAnalyticsClient
+from tooja.brokers.kis.auth import TokenManager
 from tooja.brokers.kis.credentials import KisCredentials
 from tooja.brokers.kis.info import KisInfoClient
 from tooja.brokers.kis.market import KisMarketClient
@@ -55,6 +56,7 @@ class KisBroker(Broker):
         )
 
         self._http: httpx.AsyncClient | None = None
+        self._tokens: TokenManager | None = None
         self._open = False
 
         # Attach subclients
@@ -87,23 +89,54 @@ class KisBroker(Broker):
             )
 
     async def open(self) -> None:
-        """Prepare session / auth. This plan only flips the lifecycle flag — token /
-        approval_key issuance is a separate plan."""
+        """Prepare HTTP session and prime the token manager.
+
+        Token issuance is lazy — the first authenticated call triggers it via
+        TokenManager.get_token(). approval_key likewise issues on first WS use.
+        """
         if self._open:
             return
         if self._http is None:
             self._http = httpx.AsyncClient(base_url=self.base_url, timeout=_HTTP_TIMEOUT_SEC)
-        # TODO(separate plan): issue token / load cache / fetch approval_key.
+        self._tokens = TokenManager(
+            self.credentials,
+            base_url=self.base_url,
+            is_virtual=self.is_virtual,
+            http=self._http,
+        )
         self._open = True
 
     async def close(self) -> None:
-        """Cleanup session / streams. Always discards the HTTP session regardless of _open.
-
-        Prevents a leak when open() raised mid-way leaving self._open=False but self._http set.
-        """
+        """Cleanup session / streams. Always discards the HTTP session regardless of _open."""
         try:
             if self._http is not None:
                 await self._http.aclose()
                 self._http = None
+            self._tokens = None
         finally:
             self._open = False
+
+    async def get_access_token(self) -> str:
+        self._require_open()
+        assert self._tokens is not None
+        return await self._tokens.get_token()
+
+    async def get_approval_key(self) -> str:
+        self._require_open()
+        assert self._tokens is not None
+        return await self._tokens.get_approval_key()
+
+    def invalidate_token(self) -> None:
+        if self._tokens is not None:
+            self._tokens.invalidate_token()
+
+    def build_auth_headers(self, access_token: str, tr_id: str) -> dict[str, str]:
+        """Standard header set for an authenticated KIS REST call."""
+        return {
+            "content-type": "application/json; charset=utf-8",
+            "authorization": f"Bearer {access_token}",
+            "appkey": self.credentials.app_key,
+            "appsecret": self.credentials.app_secret,
+            "tr_id": tr_id,
+            "custtype": "P",
+        }

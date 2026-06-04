@@ -1,7 +1,14 @@
-"""Target-weight rebalancer — outline only.
+"""Target-weight rebalancer.
 
-This plan covers types + constructor + weight-sum validation.
-The compute_plan() / execute() algorithm bodies live in a separate plan.
+Computes a diff between current portfolio and a target weight set, then
+generates MarketOrder requests to bring the portfolio closer to the targets.
+
+Drift = sum of |actual_weight - target_weight| across symbols.
+
+Constraints:
+- All Money inputs are KRW-only (Money currency must match across balance/positions).
+- An order is dropped if its notional is below `min_order_value`.
+- `cash_buffer_rate` of total assets is held aside (not invested).
 """
 
 from __future__ import annotations
@@ -12,7 +19,13 @@ from typing import Iterable
 from pydantic import BaseModel
 
 from tooja.core.broker import Broker
-from tooja.core.models import Order, OrderRequest, Symbol  # noqa: F401
+from tooja.core.enums import Currency, OrderSide
+from tooja.core.models import (
+    MarketOrder,
+    Order,
+    OrderRequest,
+    Symbol,
+)
 
 
 _WEIGHT_TOLERANCE = Decimal("0.001")
@@ -56,15 +69,84 @@ class Rebalancer:
             )
 
     async def compute_plan(self) -> RebalancePlan:
-        """Diff current vs target weights and produce the order list.
+        """Diff current vs target weights and produce the order list."""
+        balance = await self.broker.account.get_balance()
+        if balance.total_asset is None:
+            raise ValueError("broker returned no total_asset — cannot compute plan")
+        total = balance.total_asset.amount
+        currency = balance.total_asset.currency
 
-        Implemented in a separate plan.
-        """
-        raise NotImplementedError("compute_plan: implemented in a separate plan")
+        investable = (total * (Decimal("1.0") - self.cash_buffer_rate)).quantize(Decimal("1"))
+
+        current_value: dict[Symbol, Decimal] = {}
+        current_price: dict[Symbol, Decimal] = {}
+        for pos in balance.positions:
+            if pos.current_price is None:
+                continue
+            if pos.current_price.currency is not currency:
+                continue
+            current_price[pos.symbol] = pos.current_price.amount
+            current_value[pos.symbol] = pos.qty * pos.current_price.amount
+
+        orders: list[OrderRequest] = []
+        drift = Decimal(0)
+
+        for t in self.targets:
+            target_value = investable * t.weight
+            actual = current_value.get(t.symbol, Decimal(0))
+            actual_weight = (actual / total) if total > 0 else Decimal(0)
+            drift += abs(actual_weight - t.weight)
+
+            diff_value = target_value - actual
+            if abs(diff_value) < self.min_order_value:
+                continue
+
+            price = current_price.get(t.symbol)
+            if price is None or price <= 0:
+                price = await self._lookup_price(t.symbol, currency)
+            if price is None or price <= 0:
+                continue
+
+            qty_raw = (diff_value / price)
+            qty = qty_raw.quantize(Decimal("1"), rounding="ROUND_DOWN") if qty_raw > 0 else \
+                (-qty_raw).quantize(Decimal("1"), rounding="ROUND_DOWN")
+            if qty <= 0:
+                continue
+
+            side = OrderSide.BUY if diff_value > 0 else OrderSide.SELL
+            orders.append(MarketOrder(symbol=t.symbol, side=side, qty=qty))
+
+        # Symbols currently held but not in targets -> fully exit.
+        target_syms = {t.symbol for t in self.targets}
+        for sym, val in current_value.items():
+            if sym in target_syms:
+                continue
+            actual_weight = (val / total) if total > 0 else Decimal(0)
+            drift += actual_weight
+            for pos in balance.positions:
+                if pos.symbol == sym and pos.qty > 0:
+                    orders.append(MarketOrder(symbol=sym, side=OrderSide.SELL, qty=pos.qty))
+                    break
+
+        return RebalancePlan(orders=orders, expected_drift=drift)
 
     async def execute(self, plan: RebalancePlan, *, dry_run: bool = True) -> list[Order]:
-        """Run the plan against the broker. dry_run=True simulates only.
+        """Run the plan against the broker.
 
-        Implemented in a separate plan.
+        Note: broker.orders.create is already dry-run in the current KIS adapter.
+        Setting dry_run=False here does not enable live trading on KIS.
         """
-        raise NotImplementedError("execute: implemented in a separate plan")
+        out: list[Order] = []
+        for req in plan.orders:
+            order = await self.broker.orders.create(req)
+            out.append(order)
+        return out
+
+    async def _lookup_price(self, sym: Symbol, currency: Currency) -> Decimal | None:
+        try:
+            quote = await self.broker.market.get_quote(sym)
+        except Exception:  # noqa: BLE001 — price unavailable -> skip this symbol
+            return None
+        if quote.price.currency is not currency:
+            return None
+        return quote.price.amount
