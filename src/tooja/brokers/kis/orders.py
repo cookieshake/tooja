@@ -148,11 +148,18 @@ class KisOrdersClient(OrdersClient):
     ) -> Order:
         creds = self._broker.credentials
         krx_org = existing.raw.get("krx_fwdg_ord_orgno") or ""
-        eff_qty = new_qty if new_qty is not None else existing.qty
+        # Full cancel: send qty=0 + QTY_ALL_ORD_YN=Y. Sending the original qty
+        # can be rejected with "quantity exceeded" if the order was partially
+        # filled before we cancel.
+        if dvsn == "02" and new_qty is None:
+            eff_qty: Decimal = Decimal(0)
+            all_qty = "Y"
+        else:
+            eff_qty = new_qty if new_qty is not None else existing.qty
+            all_qty = "N"
         eff_price = new_price if new_price is not None else (
             existing.price.amount if existing.price is not None else Decimal(0)
         )
-        all_qty = "Y" if (dvsn == "02" and new_qty is None) else "N"
         raw_req = OrderRvsecnclRequest(
             CANO=creds.cano,
             ACNT_PRDT_CD=creds.acnt_prdt_cd,

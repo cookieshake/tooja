@@ -56,7 +56,14 @@ if TYPE_CHECKING:
 
 _INTERVAL_TO_PERIOD: dict[str, str] = {"1d": "D", "1w": "W", "1M": "M"}
 _INTERVAL_TO_OVERSEAS: dict[str, str] = {"1d": "0", "1w": "1", "1M": "2"}
-_INTRADAY_INTERVALS = {"1m", "5m", "15m", "30m", "1h"}
+_INTRADAY_ETC_CLS: dict[str, str] = {
+    "1m": "",   # KIS default
+    "5m": "5",
+    "15m": "15",
+    "30m": "30",
+    "1h": "60",
+}
+_INTRADAY_INTERVALS = set(_INTRADAY_ETC_CLS)
 
 
 def _as_symbol(s: Symbol | str) -> Symbol:
@@ -189,7 +196,7 @@ class KisMarketClient(MarketClient):
 
     async def _intraday_ohlcv(self, sym: Symbol, *, interval: str, limit) -> list[OHLCV]:
         req = InquireTimeItemchartpriceRequest(
-            FID_ETC_CLS_CODE="",
+            FID_ETC_CLS_CODE=_INTRADAY_ETC_CLS[interval],
             FID_COND_MRKT_DIV_CODE="J",
             FID_INPUT_ISCD=sym.ticker,
             FID_INPUT_HOUR_1="153000",

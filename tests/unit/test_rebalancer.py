@@ -350,6 +350,46 @@ async def test_compute_plan_exits_position_without_current_price():
 
 
 @pytest.mark.asyncio
+async def test_plan_sells_before_buys():
+    """Cash from SELLs must be freed before BUYs hit, otherwise the broker
+    rejects them for insufficient funds."""
+    from datetime import datetime, timezone
+
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, Position, Quote
+    from tooja.core.money import Money
+
+    keep = Symbol(ticker="005930")    # target=100%, currently 0
+    drop = Symbol(ticker="035720")    # off-target, currently fully invested
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("0"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=drop, qty=Decimal("20"),
+                avg_price=Money(amount=Decimal("50000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("50000"), currency=Currency.KRW),
+            ),
+        ],
+    )
+    quote = Quote(
+        symbol=keep,
+        price=Money(amount=Decimal("70000"), currency=Currency.KRW),
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {keep: quote}),
+        targets=[TargetWeight(symbol=keep, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    plan = await rb.compute_plan()
+    sides = [o.side for o in plan.orders]
+    # All SELLs precede the first BUY.
+    first_buy_idx = next((i for i, s in enumerate(sides) if s is OrderSide.BUY), len(sides))
+    assert all(s is OrderSide.SELL for s in sides[:first_buy_idx])
+
+
+@pytest.mark.asyncio
 async def test_execute_calls_orders_create():
     from tooja.core.enums import Currency
     from tooja.core.models import Balance, MarketOrder

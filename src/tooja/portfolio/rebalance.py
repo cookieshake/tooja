@@ -153,6 +153,11 @@ class Rebalancer:
                 continue
             orders.append(MarketOrder(symbol=pos.symbol, side=OrderSide.SELL, qty=pos.qty))
 
+        # Execute SELLs before BUYs so cash is freed up first — otherwise a
+        # large BUY at the head of the queue can be rejected for insufficient
+        # funds.
+        orders.sort(key=lambda o: 0 if o.side is OrderSide.SELL else 1)
+
         return RebalancePlan(orders=orders, expected_drift=drift)
 
     async def execute(self, plan: RebalancePlan) -> list[Order]:

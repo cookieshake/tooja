@@ -113,6 +113,74 @@ async def test_create_market_order_uses_dvsn_01(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cancel_sends_qty_zero_for_full_cancel(monkeypatch):
+    """Regression: full cancel must send ORD_QTY=0 + QTY_ALL_ORD_YN=Y so KIS
+    doesn't reject with 'quantity exceeded' for partially-filled orders."""
+    from datetime import datetime, timezone
+    from tooja.brokers.kis import orders as orders_mod
+    from tooja.core.models import Order
+
+    captured: dict = {}
+    list_call = {"n": 0}
+
+    existing = Order(
+        order_id="0000000001",
+        symbol=Symbol(ticker="005930"),
+        side=OrderSide.BUY, qty=Decimal("10"),
+        type="limit",
+        price=Money(amount=Decimal("70000"), currency=Currency.KRW),
+        status=OrderStatus.OPEN,
+        submitted_at=datetime.now(timezone.utc),
+        raw={"krx_fwdg_ord_orgno": "01577"},
+    )
+
+    async def fake_call(broker, executor_cls, request, *, tr_id=None, extra_headers=None):
+        from tooja.brokers.kis.raw.domestic_stock_trading.order_rvsecncl import (
+            OrderRvsecnclExecutor,
+        )
+        from types import SimpleNamespace
+
+        if executor_cls is OrderRvsecnclExecutor:
+            captured["request"] = request
+            return SimpleNamespace(output=[SimpleNamespace(odno="0000000002", krx_fwdg_ord_orgno="01577", ord_tmd=None)])
+
+        # list_orders pagination loop — return the single existing order on
+        # first call, empty thereafter.
+        from tooja.brokers.kis.raw.domestic_stock_trading.inquire_daily_ccld import (
+            InquireDailyCcldExecutor,
+        )
+        assert executor_cls is InquireDailyCcldExecutor
+        list_call["n"] += 1
+        if list_call["n"] == 1:
+            row = SimpleNamespace(
+                odno="0000000001", pdno="005930",
+                tot_ord_qty="10", tot_ccld_qty="0",
+                sll_buy_dvsn_cd="02",  # buy
+                avg_prvs=None, ord_unpr="70000",
+                ord_dvsn_cd="00", ord_dt=None, ord_tmd=None,
+                rmn_qty=None,
+                model_dump=lambda: {"odno": "0000000001"},
+            )
+            return SimpleNamespace(output1=[row], headers=None)
+        return SimpleNamespace(output1=[], headers=None)
+
+    monkeypatch.setattr(orders_mod, "call", fake_call)
+
+    broker = _broker(env="real")
+    await broker.open()
+    try:
+        client = KisOrdersClient(broker)
+        await client.cancel("0000000001")
+    finally:
+        await broker.close()
+
+    raw = captured["request"]
+    assert raw.ORD_QTY == "0"
+    assert raw.QTY_ALL_ORD_YN == "Y"
+    assert raw.RVSE_CNCL_DVSN_CD == "02"
+
+
+@pytest.mark.asyncio
 async def test_create_rejected_when_response_has_no_odno(monkeypatch):
     from tooja.brokers.kis import orders as orders_mod
     from tooja.core.errors import OrderRejected
