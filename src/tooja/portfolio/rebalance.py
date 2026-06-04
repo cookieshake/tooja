@@ -146,14 +146,14 @@ class Rebalancer:
             actual_after = actual + trade_val if side is OrderSide.BUY else actual - trade_val
             drift += abs((actual_after / total) - t.weight)
 
-        # Symbols currently held but not in targets -> fully exit (residual = 0
-        # for priced positions; unpriced positions still get a SELL but their
-        # post-trade weight is unknown so we don't contribute to drift).
+        # Symbols currently held but not in targets -> fully exit. Long
+        # positions SELL their qty; short positions BUY back abs(qty).
         target_syms = {t.symbol for t in self.targets}
         for pos in balance.positions:
-            if pos.symbol in target_syms or pos.qty <= 0:
+            if pos.symbol in target_syms or pos.qty == 0:
                 continue
-            orders.append(MarketOrder(symbol=pos.symbol, side=OrderSide.SELL, qty=pos.qty))
+            side = OrderSide.SELL if pos.qty > 0 else OrderSide.BUY
+            orders.append(MarketOrder(symbol=pos.symbol, side=side, qty=abs(pos.qty)))
 
         # Execute SELLs before BUYs so cash is freed up first — otherwise a
         # large BUY at the head of the queue can be rejected for insufficient

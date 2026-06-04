@@ -177,6 +177,15 @@ class KisWsStream(Generic[T]):
                 async for raw in self._ws:
                     for item in self._parse(raw):
                         await self._queue.put(item)
+                # Clean termination — must null self._ws so the next iteration
+                # actually reconnects instead of spinning on a closed socket.
+                self._ws = None
+                if not self._auto_reconnect or self._closed:
+                    break
+                logger.warning("KIS WS closed cleanly — reconnecting")
+                if self._include_control:
+                    await self._queue.put(self._control("disconnected", []))  # type: ignore[arg-type]
+                await asyncio.sleep(1.0)
             except ConnectionClosed:
                 if not self._auto_reconnect or self._closed:
                     break
@@ -341,6 +350,17 @@ class KisOrderUpdateStream:
                 async for raw in self._ws:
                     for item in self._parse(raw):
                         await self._queue.put(item)
+                # Clean close — null self._ws so the next iteration reconnects
+                # instead of busy-looping on a closed socket.
+                self._ws = None
+                if not self._auto_reconnect or self._closed:
+                    break
+                logger.warning("KIS order WS closed cleanly — reconnecting")
+                if self._include_control:
+                    await self._queue.put(StreamControlEvent(
+                        kind="disconnected", time=datetime.now(timezone.utc),
+                    ))
+                await asyncio.sleep(1.0)
             except ConnectionClosed:
                 if not self._auto_reconnect or self._closed:
                     break

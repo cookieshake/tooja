@@ -27,6 +27,16 @@ def _ns(**kw) -> SimpleNamespace:
     return SimpleNamespace(**kw)
 
 
+def test_parse_kst_datetime_returns_none_when_time_missing():
+    """Regression: returning midnight when t is missing made every
+    `_parse_kst_datetime(d, t) or _utc_now()` fallback dead code."""
+    from tooja.brokers.kis._mappers import _parse_kst_datetime
+    assert _parse_kst_datetime("20260601", None) is None
+    assert _parse_kst_datetime("20260601", "") is None
+    # Sanity: with a real time, still returns a datetime.
+    assert _parse_kst_datetime("20260601", "143000") is not None
+
+
 def test_dec_float_routes_through_str_to_avoid_binary_artifacts():
     """Regression: Decimal(0.1) yields 0.1000000000000000055511151231257827021181583404541015625;
     we must convert floats via str() first to get a clean 0.1."""

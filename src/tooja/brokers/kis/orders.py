@@ -271,7 +271,8 @@ class KisOrdersClient(OrdersClient):
         today = kst_today()
         end_d = _yyyymmdd(until) if until else _yyyymmdd(today)
         start_d = _yyyymmdd(since) if since else _yyyymmdd(today)
-        pdno = _as_symbol(symbol).ticker if symbol else None
+        # KIS rejects null in request fields — empty string queries all symbols.
+        pdno = _as_symbol(symbol).ticker if symbol else ""
         ccld_dvsn = "01" if only_filled else ("02" if status == "open" else "00")
 
         req = InquireDailyCcldRequest(

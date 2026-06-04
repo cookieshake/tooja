@@ -92,6 +92,20 @@ def test_token_load_returns_none_on_malformed_json(tmp_path, monkeypatch):
     assert _load_token() is None
 
 
+def test_scope_tag_distinct_per_app_key():
+    """Regression: cache paths must be app_key-scoped so two brokers with
+    different credentials don't trample each other's cache."""
+    from tooja.brokers.kis.auth import _approval_path, _scope_tag, _token_path
+
+    a = _scope_tag("APP_KEY_A")
+    b = _scope_tag("APP_KEY_B")
+    assert a != b
+    assert _token_path("APP_KEY_A") != _token_path("APP_KEY_B")
+    assert _approval_path("APP_KEY_A") != _approval_path("APP_KEY_B")
+    # Stable across calls.
+    assert _scope_tag("APP_KEY_A") == a
+
+
 def test_token_save_is_atomic_via_temp_rename(tmp_path, monkeypatch):
     """Regression: _write_json must stage into a sibling .tmp then rename,
     so a concurrent reader never sees a half-written file."""

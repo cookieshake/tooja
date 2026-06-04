@@ -89,16 +89,18 @@ def _parse_kst_date(s: str) -> date | None:
 
 
 def _parse_kst_datetime(d: str, t: str | None = None) -> datetime | None:
-    """KIS uses YYYYMMDD + HHMMSS, KST. Return tz-aware UTC."""
-    if not d or len(d) < 8:
+    """KIS uses YYYYMMDD + HHMMSS, KST. Return tz-aware UTC.
+
+    Returns None when `t` is missing so callers' `... or _utc_now()` fallbacks
+    take effect — defaulting to midnight KST would silently rewind timestamps
+    by 9 hours.
+    """
+    if not d or len(d) < 8 or not t:
         return None
     try:
         year, month, day = int(d[:4]), int(d[4:6]), int(d[6:8])
-        if t:
-            tp = t.zfill(6)
-            hour, minute, sec = int(tp[:2]), int(tp[2:4]), int(tp[4:6])
-        else:
-            hour = minute = sec = 0
+        tp = t.zfill(6)
+        hour, minute, sec = int(tp[:2]), int(tp[2:4]), int(tp[4:6])
         from datetime import timedelta
         kst = datetime(year, month, day, hour, minute, sec)
         return (kst - timedelta(hours=KST_OFFSET_HOURS)).replace(tzinfo=timezone.utc)

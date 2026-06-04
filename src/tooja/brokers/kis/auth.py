@@ -13,6 +13,7 @@ Storage path is `.kis-spec/` per user policy (already in .gitignore).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -33,10 +34,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _CACHE_DIR = Path(".kis-spec")
+# Legacy single-tenant paths — kept for backwards-compat reads only; new writes
+# go to _token_path() / _approval_path() which scope by app_key hash.
 _TOKEN_FILE = _CACHE_DIR / "token.json"
 _APPROVAL_FILE = _CACHE_DIR / "approval_key.json"
 _TOKEN_REFRESH_MARGIN = timedelta(minutes=10)
 _APPROVAL_TTL = timedelta(hours=23)
+
+
+def _scope_tag(app_key: str) -> str:
+    """8-hex prefix of sha256(app_key). Stable, non-reversible, multi-account safe."""
+    return hashlib.sha256(app_key.encode("utf-8")).hexdigest()[:8]
+
+
+def _token_path(app_key: str) -> Path:
+    return _CACHE_DIR / f"token_{_scope_tag(app_key)}.json"
+
+
+def _approval_path(app_key: str) -> Path:
+    return _CACHE_DIR / f"approval_key_{_scope_tag(app_key)}.json"
 
 
 @dataclass(frozen=True)
@@ -86,8 +102,8 @@ def _write_json(path: Path, data: dict) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def _load_token() -> TokenCache | None:
-    raw = _read_json(_TOKEN_FILE)
+def _load_token(path: Path | None = None) -> TokenCache | None:
+    raw = _read_json(path if path is not None else _TOKEN_FILE)
     if raw is None:
         return None
     try:
@@ -100,15 +116,15 @@ def _load_token() -> TokenCache | None:
         return None
 
 
-def _save_token(token: TokenCache) -> None:
-    _write_json(_TOKEN_FILE, {
+def _save_token(token: TokenCache, path: Path | None = None) -> None:
+    _write_json(path if path is not None else _TOKEN_FILE, {
         "access_token": token.access_token,
         "expires_at": token.expires_at.isoformat(),
     })
 
 
-def _load_approval() -> ApprovalCache | None:
-    raw = _read_json(_APPROVAL_FILE)
+def _load_approval(path: Path | None = None) -> ApprovalCache | None:
+    raw = _read_json(path if path is not None else _APPROVAL_FILE)
     if raw is None:
         return None
     try:
@@ -121,8 +137,8 @@ def _load_approval() -> ApprovalCache | None:
         return None
 
 
-def _save_approval(approval: ApprovalCache) -> None:
-    _write_json(_APPROVAL_FILE, {
+def _save_approval(approval: ApprovalCache, path: Path | None = None) -> None:
+    _write_json(path if path is not None else _APPROVAL_FILE, {
         "approval_key": approval.approval_key,
         "issued_at": approval.issued_at.isoformat(),
     })
@@ -149,8 +165,10 @@ class TokenManager:
         self._base_url = base_url
         self._is_virtual = is_virtual
         self._http = http
-        self._token: TokenCache | None = _load_token()
-        self._approval: ApprovalCache | None = _load_approval()
+        self._token_path = _token_path(credentials.app_key)
+        self._approval_path = _approval_path(credentials.app_key)
+        self._token: TokenCache | None = _load_token(self._token_path)
+        self._approval: ApprovalCache | None = _load_approval(self._approval_path)
         self._token_lock = asyncio.Lock()
         self._approval_lock = asyncio.Lock()
 
@@ -161,7 +179,7 @@ class TokenManager:
             if self._token and not self._token.expired():
                 return self._token.access_token
             self._token = await self._issue_token()
-            _save_token(self._token)
+            _save_token(self._token, self._token_path)
             return self._token.access_token
 
     async def get_approval_key(self) -> str:
@@ -171,15 +189,15 @@ class TokenManager:
             if self._approval and not self._approval.expired():
                 return self._approval.approval_key
             self._approval = await self._issue_approval()
-            _save_approval(self._approval)
+            _save_approval(self._approval, self._approval_path)
             return self._approval.approval_key
 
     def invalidate_token(self) -> None:
         self._token = None
         try:
-            _TOKEN_FILE.unlink(missing_ok=True)
+            self._token_path.unlink(missing_ok=True)
         except OSError as e:
-            logger.warning("Failed to delete %s: %s", _TOKEN_FILE, e)
+            logger.warning("Failed to delete %s: %s", self._token_path, e)
 
     async def _issue_token(self) -> TokenCache:
         req = TokenpRequest(

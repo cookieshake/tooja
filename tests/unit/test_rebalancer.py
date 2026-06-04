@@ -350,6 +350,38 @@ async def test_compute_plan_exits_position_without_current_price():
 
 
 @pytest.mark.asyncio
+async def test_off_target_short_position_closed_by_buy():
+    """Regression: off-target short position must be closed with a BUY for
+    abs(qty), not silently left open by a `qty <= 0` skip."""
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, Position
+    from tooja.core.money import Money
+
+    keep = Symbol(ticker="005930")  # target
+    short = Symbol(ticker="035720")  # off-target short
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        positions=[
+            Position(
+                symbol=short, qty=Decimal("-5"),
+                avg_price=Money(amount=Decimal("50000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("50000"), currency=Currency.KRW),
+            ),
+        ],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=keep, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    plan = await rb.compute_plan()
+    exits = [o for o in plan.orders if o.symbol == short]
+    assert len(exits) == 1
+    assert exits[0].side is OrderSide.BUY
+    assert exits[0].qty == Decimal("5")
+
+
+@pytest.mark.asyncio
 async def test_unpriced_short_position_marked_unpriced_not_dropped():
     """Regression: a short position (qty<0) with unresolvable price must be
     flagged unpriced, not silently dropped. Otherwise the matching target
