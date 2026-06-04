@@ -9,14 +9,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from tooja.brokers.kis._mappers import (
+    _WS_ORDER_COLUMNS,
     _WS_QUOTE_COLUMNS,
     orderbook_from_ws_record,
+    order_update_from_ws_record,
     quote_from_ws_record,
     trade_from_ws_record,
 )
-from tooja.brokers.kis._ws_stream import KisWsStream, _SubscriptionTopic
+from tooja.brokers.kis._ws_stream import KisOrderUpdateStream, KisWsStream, _SubscriptionTopic
 from tooja.core.clients import StreamClient
-from tooja.core.errors import UnsupportedOperation
 from tooja.core.models import Symbol
 from tooja.core.stream import (
     OrderbookStream,
@@ -116,7 +117,12 @@ class KisStreamClient(StreamClient):
         auto_reconnect: bool = True,
         buffer_size: int = 1024,
     ) -> OrderUpdateStream:
-        raise UnsupportedOperation(
-            "KIS my-order WS (H0STCNI0) requires HTS user id / hash key — not wired in",
-            broker="kis",
+        return KisOrderUpdateStream(  # type: ignore[return-value]
+            self._broker,
+            tr_id="H0STCNI0",
+            columns=_WS_ORDER_COLUMNS,
+            mapper=order_update_from_ws_record,
+            include_control=include_control,
+            auto_reconnect=auto_reconnect,
+            buffer_size=buffer_size,
         )

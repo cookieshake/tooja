@@ -220,3 +220,139 @@ class KisWsStream(Generic[T]):
             time=datetime.now(timezone.utc),
             symbols_affected=syms,
         )
+
+
+class KisOrderUpdateStream:
+    """Account-scoped my-order WS (no per-symbol subscribe).
+
+    KIS H0STCNI0 subscribes by HTS_ID (tr_key). The single connection delivers
+    every order event for that account.
+    """
+
+    def __init__(
+        self,
+        broker: "KisBroker",
+        *,
+        tr_id: str,
+        columns: tuple[str, ...],
+        mapper: Mapper,
+        include_control: bool,
+        auto_reconnect: bool,
+        buffer_size: int,
+    ):
+        self._broker = broker
+        self._tr_id = tr_id
+        self._columns = columns
+        self._mapper = mapper
+        self._include_control = include_control
+        self._auto_reconnect = auto_reconnect
+        self._queue: asyncio.Queue = asyncio.Queue(maxsize=buffer_size)
+        self._ws: websockets.WebSocketClientProtocol | None = None
+        self._reader_task: asyncio.Task | None = None
+        self._url = VIRTUAL_WS_URL if broker.is_virtual else REAL_WS_URL
+        self._closed = False
+
+    @property
+    def auto_reconnect(self) -> bool:
+        return self._auto_reconnect
+
+    async def __aenter__(self) -> "KisOrderUpdateStream":
+        await self._connect()
+        self._reader_task = asyncio.create_task(self._reader_loop())
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        self._closed = True
+        if self._reader_task is not None:
+            self._reader_task.cancel()
+            try:
+                await self._reader_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._ws is not None:
+            await self._ws.close()
+            self._ws = None
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._closed and self._queue.empty():
+            raise StopAsyncIteration
+        return await self._queue.get()
+
+    async def _connect(self) -> None:
+        approval = await self._broker.get_approval_key()
+        self._approval = approval
+        self._ws = await websockets.connect(self._url)
+        await self._send_subscribe(TR_TYPE_SUBSCRIBE)
+
+    async def _send_subscribe(self, tr_type: str) -> None:
+        assert self._ws is not None
+        hts_id = self._broker.credentials.hts_id
+        msg = json.dumps({
+            "header": {
+                "approval_key": self._approval,
+                "custtype": "P",
+                "tr_type": tr_type,
+                "content-type": "utf-8",
+            },
+            "body": {"input": {"tr_id": self._tr_id, "tr_key": hts_id}},
+        })
+        await self._ws.send(msg)
+
+    async def _reader_loop(self) -> None:
+        while not self._closed:
+            try:
+                if self._ws is None:
+                    await self._connect()
+                assert self._ws is not None
+                async for raw in self._ws:
+                    for item in self._parse(raw):
+                        await self._queue.put(item)
+            except ConnectionClosed:
+                if not self._auto_reconnect or self._closed:
+                    break
+                logger.warning("KIS order WS closed — reconnecting")
+                self._ws = None
+                if self._include_control:
+                    await self._queue.put(StreamControlEvent(
+                        kind="disconnected", time=datetime.now(timezone.utc),
+                    ))
+                await asyncio.sleep(1.0)
+                continue
+            except Exception as e:
+                logger.exception("KIS order WS error: %s", e)
+                if not self._auto_reconnect or self._closed:
+                    break
+                self._ws = None
+                await asyncio.sleep(1.0)
+                continue
+
+    def _parse(self, raw: str | bytes) -> list:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        if raw.startswith("{"):
+            return []
+        try:
+            flag, tr_id, count_str, body = raw.split("|", 3)
+        except ValueError:
+            return []
+        if tr_id != self._tr_id:
+            return []
+        try:
+            count = int(count_str)
+        except ValueError:
+            count = 1
+        per = len(self._columns)
+        tokens = body.split("^")
+        out: list = []
+        for i in range(count):
+            chunk = tokens[i * per:(i + 1) * per]
+            if len(chunk) != per:
+                break
+            record = dict(zip(self._columns, chunk))
+            mapped = self._mapper(record)
+            if mapped is not None:
+                out.append(mapped)
+        return out

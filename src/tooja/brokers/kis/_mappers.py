@@ -88,6 +88,83 @@ def _parse_kst_datetime(d: str, t: str | None = None) -> datetime | None:
 # ─── Market ──────────────────────────────────────────
 
 
+_EXCD_BY_EXCHANGE = {
+    Exchange.NASD: "NAS",
+    Exchange.NYSE: "NYS",
+    Exchange.AMEX: "AMS",
+    Exchange.SEHK: "HKS",
+    Exchange.TKSE: "TSE",
+    Exchange.SHAA: "SHS",
+    Exchange.SZAA: "SZS",
+    Exchange.HASE: "HNX",
+    Exchange.VNSE: "HSX",
+}
+
+_CURRENCY_BY_EXCHANGE = {
+    Exchange.NASD: Currency.USD,
+    Exchange.NYSE: Currency.USD,
+    Exchange.AMEX: Currency.USD,
+    Exchange.SEHK: Currency.HKD,
+    Exchange.TKSE: Currency.JPY,
+    Exchange.SHAA: Currency.CNY,
+    Exchange.SZAA: Currency.CNY,
+    Exchange.HASE: Currency.VND,
+    Exchange.VNSE: Currency.VND,
+}
+
+
+def excd_for(exchange: Exchange) -> str | None:
+    """Return KIS overseas EXCD code, or None for domestic."""
+    return _EXCD_BY_EXCHANGE.get(exchange)
+
+
+def _money_in(currency: Currency, v: Any) -> Money | None:
+    d = _dec(v)
+    if d is None:
+        return None
+    return Money(amount=d, currency=currency)
+
+
+def quote_from_overseas_price(symbol: Symbol, output: Any, raw: dict[str, Any]) -> Quote:
+    """Convert overseas price endpoint output to Quote."""
+    currency = _CURRENCY_BY_EXCHANGE.get(symbol.exchange, Currency.USD)
+    price = _money_in(currency, getattr(output, "last", None))
+    if price is None:
+        raise ValueError(f"KIS overseas price returned no last for {symbol}")
+    diff = _money_in(currency, getattr(output, "diff", None))
+    sign = getattr(output, "sign", None)
+    if diff is not None and sign in ("4", "5") and diff.amount > 0:
+        diff = -diff
+    return Quote(
+        symbol=symbol, price=price, time=_kst_now(),
+        change=diff,
+        change_rate=_dec(getattr(output, "rate", None)),
+        prev_close=_money_in(currency, getattr(output, "base", None)),
+        volume=_dec(getattr(output, "tvol", None)),
+        raw=raw,
+    )
+
+
+def ohlcv_from_overseas_daily_item(symbol: Symbol, item: Any) -> "OHLCV | None":
+    currency = _CURRENCY_BY_EXCHANGE.get(symbol.exchange, Currency.USD)
+    d_s = getattr(item, "xymd", None)
+    d = _parse_kst_date(d_s) if d_s else None
+    if d is None:
+        return None
+    o = _money_in(currency, getattr(item, "open", None))
+    h = _money_in(currency, getattr(item, "high", None))
+    l = _money_in(currency, getattr(item, "low", None))
+    c = _money_in(currency, getattr(item, "clos", None))
+    if not (o and h and l and c):
+        return None
+    vol = _dec(getattr(item, "tvol", None)) or Decimal(0)
+    return OHLCV(
+        symbol=symbol,
+        time=datetime(d.year, d.month, d.day, tzinfo=timezone.utc),
+        open=o, high=h, low=l, close=c, volume=vol,
+    )
+
+
 def quote_from_inquire_price(
     symbol: Symbol, output: Any, raw: dict[str, Any]
 ) -> Quote:
@@ -340,15 +417,134 @@ def dividend_from_row(symbol: Symbol, item: Any, raw_row: dict[str, Any]) -> "Di
     )
 
 
-def ranking_entry_from_volume_row(item: Any, raw_row: dict[str, Any]) -> "RankingEntry | None":
-    from tooja.core.models import RankingEntry
-
+def _ranking_common(item: Any, value_field: str) -> tuple[int, str, str, Decimal, Any, Any] | None:
     rank = _int(getattr(item, "data_rank", None))
     ticker = getattr(item, "mksc_shrn_iscd", None)
     if rank is None or not ticker:
         return None
     name = getattr(item, "hts_kor_isnm", None) or ticker
-    value = _dec(getattr(item, "acml_vol", None)) or Decimal(0)
+    value = _dec(getattr(item, value_field, None)) or Decimal(0)
+    price = _money_krw(getattr(item, "stck_prpr", None))
+    change_rate = _dec(getattr(item, "prdy_ctrt", None))
+    return rank, ticker, name, value, price, change_rate
+
+
+def _build_ranking(item: Any, raw_row: dict[str, Any], value_field: str) -> "RankingEntry | None":
+    from tooja.core.models import RankingEntry
+
+    parts = _ranking_common(item, value_field)
+    if parts is None:
+        return None
+    rank, ticker, name, value, price, change_rate = parts
+    return RankingEntry(
+        rank=rank,
+        symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),
+        name=name, value=value, price=price, change_rate=change_rate,
+        raw=raw_row,
+    )
+
+
+def ranking_entry_from_volume_row(item: Any, raw_row: dict[str, Any]) -> "RankingEntry | None":
+    return _build_ranking(item, raw_row, "acml_vol")
+
+
+def ranking_entry_from_turnover_row(item: Any, raw_row: dict[str, Any]) -> "RankingEntry | None":
+    return _build_ranking(item, raw_row, "acml_tr_pbmn")
+
+
+def ranking_entry_from_short_row(item: Any, raw_row: dict[str, Any]) -> "RankingEntry | None":
+    # short-sale endpoint uses ssts_cntg_qty (volume) and ssts_tr_pbmn (value).
+    from tooja.core.models import RankingEntry
+
+    ticker = getattr(item, "mksc_shrn_iscd", None)
+    if not ticker:
+        return None
+    rank = _int(getattr(item, "data_rank", None)) or 0
+    name = getattr(item, "hts_kor_isnm", None) or ticker
+    qty = _dec(getattr(item, "ssts_cntg_qty", None)) or Decimal(0)
+    price = _money_krw(getattr(item, "stck_prpr", None))
+    change_rate = _dec(getattr(item, "prdy_ctrt", None))
+    return RankingEntry(
+        rank=rank,
+        symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),
+        name=name, value=qty, price=price, change_rate=change_rate,
+        raw=raw_row,
+    )
+
+
+def ranking_entry_from_quote_balance_row(item: Any, raw_row: dict[str, Any]) -> "RankingEntry | None":
+    # quote-balance: total_askp_rsqn / total_bidp_rsqn.
+    from tooja.core.models import RankingEntry
+
+    ticker = getattr(item, "mksc_shrn_iscd", None)
+    if not ticker:
+        return None
+    rank = _int(getattr(item, "data_rank", None)) or 0
+    name = getattr(item, "hts_kor_isnm", None) or ticker
+    bid_qty = _dec(getattr(item, "total_bidp_rsqn", None)) or Decimal(0)
+    ask_qty = _dec(getattr(item, "total_askp_rsqn", None)) or Decimal(0)
+    price = _money_krw(getattr(item, "stck_prpr", None))
+    return RankingEntry(
+        rank=rank,
+        symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),
+        name=name, value=bid_qty,  # caller picks side via kwarg below
+        price=price, change_rate=None,
+        raw={**raw_row, "_bid_qty": str(bid_qty), "_ask_qty": str(ask_qty)},
+    )
+
+
+def ranking_entry_from_highlow_row(item: Any, raw_row: dict[str, Any]) -> "RankingEntry | None":
+    # near-new-highlow: no acml_vol explicit; value is rank position; use prpr as proxy via change_rate.
+    from tooja.core.models import RankingEntry
+
+    ticker = getattr(item, "mksc_shrn_iscd", None)
+    if not ticker:
+        return None
+    rank = _int(getattr(item, "data_rank", None)) or 0
+    name = getattr(item, "hts_kor_isnm", None) or ticker
+    price = _money_krw(getattr(item, "stck_prpr", None))
+    change_rate = _dec(getattr(item, "prdy_ctrt", None))
+    value = _dec(getattr(item, "stck_prpr", None)) or Decimal(0)
+    return RankingEntry(
+        rank=rank,
+        symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),
+        name=name, value=value, price=price, change_rate=change_rate,
+        raw=raw_row,
+    )
+
+
+def ranking_entry_from_credit_balance_row(item: Any, raw_row: dict[str, Any]) -> "RankingEntry | None":
+    # credit-balance: margin balance ranking. Use 'crdt_loan_rmnd' if exists, else 'whol_loan_rmnd'.
+    from tooja.core.models import RankingEntry
+
+    ticker = getattr(item, "mksc_shrn_iscd", None)
+    if not ticker:
+        return None
+    rank = _int(getattr(item, "data_rank", None)) or 0
+    name = getattr(item, "hts_kor_isnm", None) or ticker
+    value = _dec(getattr(item, "crdt_loan_rmnd", None)) or \
+            _dec(getattr(item, "whol_loan_rmnd", None)) or \
+            _dec(getattr(item, "acml_vol", None)) or Decimal(0)
+    price = _money_krw(getattr(item, "stck_prpr", None))
+    return RankingEntry(
+        rank=rank,
+        symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),
+        name=name, value=value, price=price,
+        change_rate=_dec(getattr(item, "prdy_ctrt", None)),
+        raw=raw_row,
+    )
+
+
+def ranking_entry_from_investor_total_row(item: Any, raw_row: dict[str, Any], *, value_field: str) -> "RankingEntry | None":
+    """foreign-institution-total: net-buy ranking. value_field picks which actor."""
+    from tooja.core.models import RankingEntry
+
+    ticker = getattr(item, "mksc_shrn_iscd", None)
+    if not ticker:
+        return None
+    rank = _int(getattr(item, "data_rank", None)) or 0
+    name = getattr(item, "hts_kor_isnm", None) or ticker
+    value = _dec(getattr(item, value_field, None)) or Decimal(0)
     price = _money_krw(getattr(item, "stck_prpr", None))
     change_rate = _dec(getattr(item, "prdy_ctrt", None))
     return RankingEntry(
@@ -374,6 +570,148 @@ def ranking_entry_from_market_cap_row(item: Any, raw_row: dict[str, Any]) -> "Ra
         rank=rank,
         symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),
         name=name, value=cap, price=price, change_rate=change_rate,
+        raw=raw_row,
+    )
+
+
+def financial_summary_from_ratio_row(
+    symbol: Symbol, item: Any, raw_row: dict[str, Any], *, period: "FinancialPeriod",
+) -> "FinancialSummary | None":
+    from datetime import date as _d
+
+    from tooja.core.enums import Currency
+    from tooja.core.models import FinancialSummary
+    from tooja.core.money import Money
+
+    stac = getattr(item, "stac_yymm", None)
+    if not stac or len(stac) < 6:
+        return None
+    try:
+        fiscal = _d(int(stac[:4]), int(stac[4:6]), 1)
+    except ValueError:
+        return None
+    eps = _dec(getattr(item, "eps", None))
+    bps = _dec(getattr(item, "bps", None))
+    roe = _dec(getattr(item, "roe_val", None))
+    return FinancialSummary(
+        symbol=symbol, period=period, fiscal_date=fiscal,
+        eps=Money(amount=eps, currency=Currency.KRW) if eps is not None else None,
+        bps=Money(amount=bps, currency=Currency.KRW) if bps is not None else None,
+        roe=roe, raw=raw_row,
+    )
+
+
+def trading_halt_from_vi_row(item: Any, raw_row: dict[str, Any]) -> "TradingHalt | None":
+    """VI (volatility-interruption) halts from inquire-vi-status."""
+    from tooja.core.models import TradingHalt
+
+    ticker = getattr(item, "mksc_shrn_iscd", None)
+    if not ticker:
+        return None
+    if getattr(item, "vi_cls_code", None) != "Y":
+        return None
+    d_s = getattr(item, "bsop_date", None)
+    t_s = getattr(item, "cntg_vi_hour", None)
+    start = _parse_kst_datetime(d_s, t_s) if d_s else None
+    if start is None:
+        return None
+    cancel_t = getattr(item, "vi_cncl_hour", None)
+    end = _parse_kst_datetime(d_s, cancel_t) if (d_s and cancel_t and cancel_t != "000000") else None
+    return TradingHalt(
+        symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),
+        start=start, end=end, reason="VI", raw=raw_row,
+    )
+
+
+def program_trading_from_row(symbol: Symbol, item: Any, raw_row: dict[str, Any]) -> "ProgramTrading | None":
+    from tooja.core.enums import Currency
+    from tooja.core.models import ProgramTrading
+    from tooja.core.money import Money
+
+    d_s = getattr(item, "stck_bsop_date", None)
+    d = _parse_kst_date(d_s) if d_s else None
+    if d is None:
+        return None
+    # KIS exposes total program net only; arbitrage/non-arbitrage breakdown is
+    # not in this endpoint — assign whole to non_arbitrage, zero arbitrage.
+    total = _dec(getattr(item, "whol_smtn_ntby_tr_pbmn", None))
+    if total is None:
+        return None
+    return ProgramTrading(
+        symbol=symbol, date=d,
+        arbitrage_net=Money(amount=Decimal(0), currency=Currency.KRW),
+        non_arbitrage_net=Money(amount=total, currency=Currency.KRW),
+        raw=raw_row,
+    )
+
+
+def short_selling_from_row(symbol: Symbol, item: Any, raw_row: dict[str, Any]) -> "ShortSellingDaily | None":
+    from tooja.core.enums import Currency
+    from tooja.core.models import ShortSellingDaily
+    from tooja.core.money import Money
+
+    d_s = getattr(item, "stck_bsop_date", None)
+    d = _parse_kst_date(d_s) if d_s else None
+    if d is None:
+        return None
+    vol = _dec(getattr(item, "ssts_cntg_qty", None)) or Decimal(0)
+    ratio = _dec(getattr(item, "ssts_vol_rlim", None))
+    # KIS daily-short-sale endpoint exposes qty + ratio but not value in KRW.
+    # Use 0 KRW as placeholder; consumers needing the value should hit raw.
+    value = Money(amount=Decimal(0), currency=Currency.KRW)
+    return ShortSellingDaily(
+        symbol=symbol, date=d,
+        short_volume=vol, short_value=value, short_ratio=ratio,
+        raw=raw_row,
+    )
+
+
+def margin_balance_from_row(symbol: Symbol, item: Any, raw_row: dict[str, Any]) -> "MarginBalance | None":
+    from tooja.core.enums import Currency
+    from tooja.core.models import MarginBalance
+    from tooja.core.money import Money
+
+    d_s = getattr(item, "deal_date", None) or getattr(item, "stlm_date", None)
+    d = _parse_kst_date(d_s) if d_s else None
+    if d is None:
+        return None
+    loan_amt = _dec(getattr(item, "whol_loan_rmnd_amt", None))  # 만원
+    if loan_amt is None:
+        return None
+    # KIS unit is 만원 (10,000 KRW) — convert.
+    loan_krw = loan_amt * Decimal(10000)
+    stln_amt = _dec(getattr(item, "whol_stln_rmnd_amt", None))
+    stock_loan = (
+        Money(amount=stln_amt * Decimal(10000), currency=Currency.KRW)
+        if stln_amt is not None else None
+    )
+    return MarginBalance(
+        symbol=symbol, date=d,
+        margin_loan=Money(amount=loan_krw, currency=Currency.KRW),
+        stock_loan=stock_loan,
+        raw=raw_row,
+    )
+
+
+def securities_lending_from_row(symbol: Symbol, item: Any, raw_row: dict[str, Any]) -> "SecuritiesLending | None":
+    from tooja.core.enums import Currency
+    from tooja.core.models import SecuritiesLending
+    from tooja.core.money import Money
+
+    d_s = getattr(item, "bsop_date", None)
+    d = _parse_kst_date(d_s) if d_s else None
+    if d is None:
+        return None
+    balance_amt = _dec(getattr(item, "rmnd_amt", None))
+    if balance_amt is None:
+        return None
+    new_amt = _dec(getattr(item, "new_stcn", None))  # 주수 — not amount; placeholder
+    return SecuritiesLending(
+        symbol=symbol, date=d,
+        balance=Money(amount=balance_amt, currency=Currency.KRW),
+        new_loan=(
+            Money(amount=new_amt, currency=Currency.KRW) if new_amt is not None else None
+        ),
         raw=raw_row,
     )
 
@@ -407,6 +745,46 @@ _WS_QUOTE_COLUMNS = (
     "STCK_HGPR", "STCK_LWPR", "ASKP1", "BIDP1", "CNTG_VOL", "ACML_VOL",
     "ACML_TR_PBMN",
 )
+
+
+_WS_ORDER_COLUMNS = (
+    "CUST_ID", "ACNT_NO", "ODER_NO", "OODER_NO", "SELN_BYOV_CLS",
+    "RCTF_CLS", "ODER_KIND", "ODER_COND", "STCK_SHRN_ISCD",
+    "CNTG_QTY", "CNTG_UNPR", "STCK_CNTG_HOUR", "RFUS_YN",
+    "CNTG_YN", "ACPT_YN",
+)
+
+
+def order_update_from_ws_record(record: dict[str, str]) -> "OrderUpdate | None":
+    """Build OrderUpdate from an H0STCNI0 record."""
+    from tooja.core.models import OrderUpdate
+
+    odno = record.get("ODER_NO")
+    ticker = record.get("STCK_SHRN_ISCD")
+    if not odno or not ticker:
+        return None
+    qty_total = _dec(record.get("ODER_QTY")) or Decimal(0)
+    filled = _dec(record.get("CNTG_QTY")) or Decimal(0)
+    rfus = record.get("RFUS_YN")
+    cntg_yn = record.get("CNTG_YN")
+    if rfus == "1":
+        status = OrderStatus.REJECTED
+    elif cntg_yn == "2":
+        status = map_order_status(None, qty_total, filled)
+    else:
+        status = OrderStatus.OPEN
+    price = _money_krw(record.get("CNTG_UNPR"))
+    today = _kst_now().date().strftime("%Y%m%d")
+    when = _parse_kst_datetime(today, record.get("STCK_CNTG_HOUR")) or _kst_now()
+    return OrderUpdate(
+        order_id=odno,
+        symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),
+        status=status,
+        filled_qty=filled,
+        avg_fill_price=price,
+        time=when,
+        raw=record,
+    )
 
 
 def quote_from_ws_record(record: dict[str, str]) -> "Quote | None":
