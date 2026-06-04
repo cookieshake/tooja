@@ -8,7 +8,9 @@ import httpx
 
 from tooja.brokers.kis.account import KisAccountClient
 from tooja.brokers.kis.analytics import KisAnalyticsClient
-from tooja.brokers.kis._rate_limit import TokenBucket
+from tooja.brokers.kis._rate_limit import (
+    DEFAULT_DEMO, DEFAULT_REAL, RateLimitConfig, TokenBucket,
+)
 from tooja.brokers.kis.auth import TokenManager
 from tooja.brokers.kis.credentials import KisCredentials
 from tooja.brokers.kis.info import KisInfoClient
@@ -24,8 +26,6 @@ from tooja.core.errors import BrokerError
 _REAL_BASE_URL = "https://openapi.koreainvestment.com:9443"
 _VIRTUAL_BASE_URL = "https://openapivts.koreainvestment.com:29443"
 _HTTP_TIMEOUT_SEC = 30.0
-_RATE_LIMIT_REAL = 20
-_RATE_LIMIT_DEMO = 2
 
 
 class KisBroker(Broker):
@@ -42,11 +42,15 @@ class KisBroker(Broker):
         hts_id: str,
         acnt_prdt_cd: str = "01",
         env: Literal["real", "demo"] = "real",
+        rate_limit: RateLimitConfig | None = None,
     ):
         self.env = env
         self.is_virtual = env == "demo"
         self.base_url = _VIRTUAL_BASE_URL if self.is_virtual else _REAL_BASE_URL
-        self.rate_limit_per_sec = _RATE_LIMIT_DEMO if self.is_virtual else _RATE_LIMIT_REAL
+        self.rate_limit: RateLimitConfig = rate_limit or (
+            DEFAULT_DEMO if self.is_virtual else DEFAULT_REAL
+        )
+        self.rate_limit_per_sec = self.rate_limit.per_sec
 
         self.credentials: KisCredentials = KisCredentials(
             app_key=app_key,
@@ -58,7 +62,7 @@ class KisBroker(Broker):
 
         self._http: httpx.AsyncClient | None = None
         self._tokens: TokenManager | None = None
-        self._rate_limiter = TokenBucket(capacity=self.rate_limit_per_sec)
+        self._rate_limiter = TokenBucket(capacity=self.rate_limit.per_sec)
         self._open = False
 
         # Attach subclients

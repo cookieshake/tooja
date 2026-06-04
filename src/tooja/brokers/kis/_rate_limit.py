@@ -1,4 +1,4 @@
-"""Async token bucket for KIS REST rate limiting.
+"""Async token bucket + RateLimitConfig for KIS REST rate limiting.
 
 KIS limits: 20 RPS (real), 2 RPS (demo).
 The bucket refills `capacity` tokens every 1.0s wall-clock. acquire() takes
@@ -8,12 +8,44 @@ Usage:
     limiter = TokenBucket(capacity=20)
     async with limiter:
         ... call KIS ...
+
+Or pass a RateLimitConfig to KisBroker to override defaults:
+    KisBroker(..., rate_limit=RateLimitConfig(per_sec=10, max_retries=3))
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class RateLimitConfig:
+    """Tunable rate-limit knobs for KisBroker.
+
+    Fields:
+      per_sec      : TokenBucket capacity (max requests per 1.0s window)
+      max_retries  : How many times to retry on KIS EGW00201 (rate-limit error)
+      base_backoff : Initial sleep on retry; doubles each attempt
+                     (so total sleep is base * (2^max_retries - 1))
+    """
+
+    per_sec: int
+    max_retries: int = 5
+    base_backoff: float = 0.1
+
+    def __post_init__(self) -> None:
+        if self.per_sec < 1:
+            raise ValueError(f"per_sec must be >= 1 (got {self.per_sec})")
+        if self.max_retries < 0:
+            raise ValueError(f"max_retries must be >= 0 (got {self.max_retries})")
+        if self.base_backoff < 0:
+            raise ValueError(f"base_backoff must be >= 0 (got {self.base_backoff})")
+
+
+DEFAULT_REAL = RateLimitConfig(per_sec=20)
+DEFAULT_DEMO = RateLimitConfig(per_sec=2)
 
 
 class TokenBucket:

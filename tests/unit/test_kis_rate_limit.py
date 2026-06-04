@@ -53,6 +53,17 @@ def test_token_bucket_capacity_must_be_positive():
 # ─── EGW00201 retry/backoff ──────────────────────────
 
 
+def _fake_broker(*, max_retries=5, base_backoff=0.001):
+    from tooja.brokers.kis._rate_limit import RateLimitConfig
+
+    class _FakeBroker:
+        rate_limit = RateLimitConfig(per_sec=20, max_retries=max_retries, base_backoff=base_backoff)
+        def _require_open(self): pass
+        def invalidate_token(self): pass
+
+    return _FakeBroker()
+
+
 @pytest.mark.asyncio
 async def test_call_retries_on_rate_limit_then_succeeds(monkeypatch):
     """When KIS returns EGW00201 twice then OK, _call.call should return OK."""
@@ -70,15 +81,9 @@ async def test_call_retries_on_rate_limit_then_succeeds(monkeypatch):
             raise KisApiError("초당 거래건수를 초과하였습니다.", "EGW00201", "1")
         return "OK"
 
-    # Speed up backoff to keep the test fast.
-    monkeypatch.setattr(call_mod, "_RATE_LIMIT_BASE_BACKOFF", 0.001)
     monkeypatch.setattr(call_mod, "_call_once", fake_once)
 
-    class _FakeBroker:
-        def _require_open(self): pass
-        def invalidate_token(self): pass
-
-    result = await call_mod.call(_FakeBroker(), _Sentinel, request=None)
+    result = await call_mod.call(_fake_broker(), _Sentinel, request=None)
     assert result == "OK"
     assert len(calls) == 3
 
@@ -92,18 +97,13 @@ async def test_call_exhausts_rate_limit_retries(monkeypatch):
     async def always_rate_limited(broker, executor_cls, request, *, tr_id, extra_headers):
         raise KisApiError("초당 거래건수를 초과하였습니다.", "EGW00201", "1")
 
-    monkeypatch.setattr(call_mod, "_RATE_LIMIT_BASE_BACKOFF", 0.001)
     monkeypatch.setattr(call_mod, "_call_once", always_rate_limited)
 
     class _Sentinel:
         PATH = "/x"
 
-    class _FakeBroker:
-        def _require_open(self): pass
-        def invalidate_token(self): pass
-
     with pytest.raises(RateLimitError) as ei:
-        await call_mod.call(_FakeBroker(), _Sentinel, request=None)
+        await call_mod.call(_fake_broker(), _Sentinel, request=None)
     assert ei.value.raw_code == "EGW00201"
 
 
@@ -125,10 +125,76 @@ async def test_call_non_rate_limit_error_raises_immediately(monkeypatch):
     class _Sentinel:
         PATH = "/x"
 
-    class _FakeBroker:
-        def _require_open(self): pass
-        def invalidate_token(self): pass
-
     with pytest.raises(AuthError):
-        await call_mod.call(_FakeBroker(), _Sentinel, request=None)
+        await call_mod.call(_fake_broker(), _Sentinel, request=None)
     assert len(calls) == 1  # no retries
+
+
+@pytest.mark.asyncio
+async def test_call_respects_custom_max_retries(monkeypatch):
+    """max_retries=2 should attempt 1 initial + 2 retries = 3 total."""
+    from tooja.brokers.kis import _call as call_mod
+    from tooja.brokers.kis.raw.base import KisApiError
+    from tooja.core.errors import RateLimitError
+
+    calls = []
+
+    async def always_rate_limited(broker, executor_cls, request, *, tr_id, extra_headers):
+        calls.append(1)
+        raise KisApiError("초당 거래건수를 초과하였습니다.", "EGW00201", "1")
+
+    monkeypatch.setattr(call_mod, "_call_once", always_rate_limited)
+
+    class _Sentinel:
+        PATH = "/x"
+
+    with pytest.raises(RateLimitError):
+        await call_mod.call(_fake_broker(max_retries=2), _Sentinel, request=None)
+    assert len(calls) == 3
+
+
+def test_rate_limit_config_validation():
+    from tooja.brokers.kis._rate_limit import RateLimitConfig
+
+    with pytest.raises(ValueError):
+        RateLimitConfig(per_sec=0)
+    with pytest.raises(ValueError):
+        RateLimitConfig(per_sec=10, max_retries=-1)
+    with pytest.raises(ValueError):
+        RateLimitConfig(per_sec=10, base_backoff=-0.1)
+
+
+def test_kis_broker_accepts_rate_limit_config():
+    from tooja.brokers.kis._rate_limit import RateLimitConfig
+    from tooja.brokers.kis.broker import KisBroker
+
+    cfg = RateLimitConfig(per_sec=10, max_retries=2, base_backoff=0.05)
+    b = KisBroker(
+        app_key="K", app_secret="S", cano="12345678", hts_id="H",
+        env="real", rate_limit=cfg,
+    )
+    assert b.rate_limit is cfg
+    assert b.rate_limit_per_sec == 10
+    assert b._rate_limiter.capacity == 10
+
+
+def test_kis_broker_uses_default_for_real_env():
+    from tooja.brokers.kis._rate_limit import DEFAULT_REAL
+    from tooja.brokers.kis.broker import KisBroker
+
+    b = KisBroker(
+        app_key="K", app_secret="S", cano="12345678", hts_id="H", env="real",
+    )
+    assert b.rate_limit is DEFAULT_REAL
+    assert b.rate_limit_per_sec == 20
+
+
+def test_kis_broker_uses_default_for_demo_env():
+    from tooja.brokers.kis._rate_limit import DEFAULT_DEMO
+    from tooja.brokers.kis.broker import KisBroker
+
+    b = KisBroker(
+        app_key="K", app_secret="S", cano="12345678", hts_id="H", env="demo",
+    )
+    assert b.rate_limit is DEFAULT_DEMO
+    assert b.rate_limit_per_sec == 2

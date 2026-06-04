@@ -28,9 +28,6 @@ logger = logging.getLogger(__name__)
 
 TResponse = TypeVar("TResponse")
 
-_RATE_LIMIT_MAX_RETRIES = 5
-_RATE_LIMIT_BASE_BACKOFF = 0.1  # 0.1, 0.2, 0.4, 0.8, 1.6 seconds
-
 
 async def call(
     broker: "KisBroker",
@@ -58,8 +55,9 @@ async def _call_with_retries(
     tr_id: str | None,
     extra_headers: dict[str, str] | None,
 ) -> object:
+    cfg = broker.rate_limit
     token_retry_used = False
-    for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
+    for attempt in range(cfg.max_retries + 1):
         try:
             return await _call_once(
                 broker, executor_cls, request,
@@ -73,18 +71,18 @@ async def _call_with_retries(
             continue
         except KisApiError as e:
             translated = _translate(e, executor_cls.PATH)
-            if e.code == "EGW00201" and attempt < _RATE_LIMIT_MAX_RETRIES:
-                backoff = _RATE_LIMIT_BASE_BACKOFF * (2 ** attempt)
+            if e.code == "EGW00201" and attempt < cfg.max_retries:
+                backoff = cfg.base_backoff * (2 ** attempt)
                 logger.warning(
                     "KIS EGW00201 rate limited on %s; backing off %.2fs (attempt %d/%d)",
-                    executor_cls.PATH, backoff, attempt + 1, _RATE_LIMIT_MAX_RETRIES,
+                    executor_cls.PATH, backoff, attempt + 1, cfg.max_retries,
                 )
                 await asyncio.sleep(backoff)
                 continue
             raise translated from e
     # Loop exit without return means the final retry also got EGW00201.
     raise BrokerAPIError(
-        f"KIS EGW00201 rate limit retries exhausted ({_RATE_LIMIT_MAX_RETRIES})",
+        f"KIS EGW00201 rate limit retries exhausted ({cfg.max_retries})",
         broker="kis",
         raw_code="EGW00201",
         endpoint=executor_cls.PATH,
