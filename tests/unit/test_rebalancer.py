@@ -195,6 +195,41 @@ async def test_compute_plan_skips_below_min_order_value():
 
 
 @pytest.mark.asyncio
+async def test_compute_plan_exits_position_without_current_price():
+    """Regression: positions whose current_price is None must still be exited."""
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, Position
+    from tooja.core.money import Money
+
+    sym = Symbol(ticker="005930")
+    other = Symbol(ticker="035720")
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("0"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=other, qty=Decimal("5"),
+                avg_price=Money(amount=Decimal("50000"), currency=Currency.KRW),
+                current_price=None,  # KIS sometimes omits current price for halted/illiquid names.
+            ),
+        ],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    rb.broker.market._quotes[sym] = type("_Q", (), {
+        "price": Money(amount=Decimal("70000"), currency=Currency.KRW),
+    })()
+    plan = await rb.compute_plan()
+    # Off-target position with qty=5 must be in the SELL orders.
+    exits = [o for o in plan.orders if o.symbol == other and o.side is OrderSide.SELL]
+    assert len(exits) == 1
+    assert exits[0].qty == Decimal("5")
+
+
+@pytest.mark.asyncio
 async def test_execute_calls_orders_create():
     from tooja.core.enums import Currency
     from tooja.core.models import Balance, MarketOrder

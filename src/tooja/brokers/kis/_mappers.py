@@ -74,8 +74,9 @@ def _parse_kst_datetime(d: str, t: str | None = None) -> datetime | None:
         return None
     try:
         year, month, day = int(d[:4]), int(d[4:6]), int(d[6:8])
-        if t and len(t) >= 6:
-            hour, minute, sec = int(t[:2]), int(t[2:4]), int(t[4:6])
+        if t:
+            tp = t.zfill(6)
+            hour, minute, sec = int(tp[:2]), int(tp[2:4]), int(tp[4:6])
         else:
             hour = minute = sec = 0
         from datetime import timedelta
@@ -747,11 +748,16 @@ _WS_QUOTE_COLUMNS = (
 )
 
 
+# Sourced from the raw H0STCNI0 subscriber's COLUMNS — full field order matters
+# because the WS frame splits records by index. Adding/removing fields silently
+# shifts every later field by one position.
 _WS_ORDER_COLUMNS = (
     "CUST_ID", "ACNT_NO", "ODER_NO", "OODER_NO", "SELN_BYOV_CLS",
     "RCTF_CLS", "ODER_KIND", "ODER_COND", "STCK_SHRN_ISCD",
     "CNTG_QTY", "CNTG_UNPR", "STCK_CNTG_HOUR", "RFUS_YN",
-    "CNTG_YN", "ACPT_YN",
+    "CNTG_YN", "ACPT_YN", "BRNC_NO", "ODER_QTY",
+    "ACNT_NAME", "ORD_COND_PRC", "ORD_EXG_GB", "POPUP_YN",
+    "FILLER", "CRDT_CLS", "CRDT_LOAN_DATE", "CNTG_ISNM40", "ODER_PRC",
 )
 
 

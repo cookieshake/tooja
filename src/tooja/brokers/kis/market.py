@@ -105,10 +105,8 @@ class KisMarketClient(MarketClient):
         return quote_from_overseas_price(sym, out, out.model_dump())
 
     async def get_quotes(self, symbols: list[Symbol | str]) -> list[Quote]:
-        result: list[Quote] = []
-        for s in symbols:
-            result.append(await self.get_quote(s))
-        return result
+        import asyncio
+        return list(await asyncio.gather(*(self.get_quote(s) for s in symbols)))
 
     async def get_orderbook(self, symbol: Symbol | str, *, depth: int = 10) -> Orderbook:
         sym = _as_symbol(symbol)

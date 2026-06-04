@@ -301,12 +301,16 @@ class KisOrdersClient(OrdersClient):
 
 
 def _parse_ord_tmd(s: str | None) -> datetime | None:
-    """KIS ord_tmd is HHMMSS in KST; date defaults to today."""
+    """KIS ord_tmd is HHMMSS in KST; date defaults to today.
+
+    KIS sometimes omits leading zeros (e.g. "93000" for 09:30:00), so we pad.
+    """
     from datetime import timedelta
-    if not s or len(s) < 6:
+    if not s:
         return None
     try:
-        h, m, sec = int(s[:2]), int(s[2:4]), int(s[4:6])
+        sp = s.zfill(6)
+        h, m, sec = int(sp[:2]), int(sp[2:4]), int(sp[4:6])
     except ValueError:
         return None
     today = date.today()

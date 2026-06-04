@@ -70,23 +70,16 @@ async def _call_with_retries(
             token_retry_used = True
             continue
         except KisApiError as e:
-            translated = _translate(e, executor_cls.PATH)
-            if e.code == "EGW00201" and attempt < cfg.max_retries:
-                backoff = cfg.base_backoff * (2 ** attempt)
-                logger.warning(
-                    "KIS EGW00201 rate limited on %s; backing off %.2fs (attempt %d/%d)",
-                    executor_cls.PATH, backoff, attempt + 1, cfg.max_retries,
-                )
-                await asyncio.sleep(backoff)
-                continue
-            raise translated from e
-    # Loop exit without return means the final retry also got EGW00201.
-    raise BrokerAPIError(
-        f"KIS EGW00201 rate limit retries exhausted ({cfg.max_retries})",
-        broker="kis",
-        raw_code="EGW00201",
-        endpoint=executor_cls.PATH,
-    )
+            if e.code != "EGW00201" or attempt == cfg.max_retries:
+                raise _translate(e, executor_cls.PATH) from e
+            backoff = cfg.base_backoff * (2 ** attempt)
+            logger.warning(
+                "KIS EGW00201 rate limited on %s; backing off %.2fs (attempt %d/%d)",
+                executor_cls.PATH, backoff, attempt + 1, cfg.max_retries,
+            )
+            await asyncio.sleep(backoff)
+    # Unreachable: loop either returns or raises on every path above.
+    raise AssertionError("unreachable")
 
 
 async def _call_once(

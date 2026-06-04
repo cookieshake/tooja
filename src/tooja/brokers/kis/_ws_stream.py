@@ -209,6 +209,12 @@ class KisWsStream(Generic[T]):
             msg = json.loads(raw)
         except json.JSONDecodeError:
             return []
+        header = msg.get("header", {})
+        if header.get("tr_id") == "PINGPONG":
+            # KIS server-initiated keepalive. Reply with the same frame.
+            if self._ws is not None:
+                asyncio.create_task(self._ws.send(raw))
+            return []
         rt_cd = msg.get("body", {}).get("rt_cd")
         if rt_cd not in (None, "0"):
             logger.error("KIS WS control error: %s", msg)
@@ -333,6 +339,13 @@ class KisOrderUpdateStream:
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8", errors="replace")
         if raw.startswith("{"):
+            # Handle KIS PINGPONG keepalive — server expects an echo.
+            try:
+                msg = json.loads(raw)
+                if msg.get("header", {}).get("tr_id") == "PINGPONG" and self._ws is not None:
+                    asyncio.create_task(self._ws.send(raw))
+            except json.JSONDecodeError:
+                pass
             return []
         try:
             flag, tr_id, count_str, body = raw.split("|", 3)

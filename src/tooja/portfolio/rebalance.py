@@ -116,26 +116,22 @@ class Rebalancer:
             side = OrderSide.BUY if diff_value > 0 else OrderSide.SELL
             orders.append(MarketOrder(symbol=t.symbol, side=side, qty=qty))
 
-        # Symbols currently held but not in targets -> fully exit.
+        # Symbols currently held but not in targets -> fully exit. Walk
+        # positions directly (O(N)) so we also exit positions without a
+        # current_price (current_value omits them).
         target_syms = {t.symbol for t in self.targets}
-        for sym, val in current_value.items():
-            if sym in target_syms:
+        for pos in balance.positions:
+            if pos.symbol in target_syms or pos.qty <= 0:
                 continue
-            actual_weight = (val / total) if total > 0 else Decimal(0)
-            drift += actual_weight
-            for pos in balance.positions:
-                if pos.symbol == sym and pos.qty > 0:
-                    orders.append(MarketOrder(symbol=sym, side=OrderSide.SELL, qty=pos.qty))
-                    break
+            if pos.current_price is not None and pos.current_price.currency is currency:
+                val = pos.qty * pos.current_price.amount
+                drift += (val / total) if total > 0 else Decimal(0)
+            orders.append(MarketOrder(symbol=pos.symbol, side=OrderSide.SELL, qty=pos.qty))
 
         return RebalancePlan(orders=orders, expected_drift=drift)
 
-    async def execute(self, plan: RebalancePlan, *, dry_run: bool = True) -> list[Order]:
-        """Run the plan against the broker.
-
-        Note: broker.orders.create is already dry-run in the current KIS adapter.
-        Setting dry_run=False here does not enable live trading on KIS.
-        """
+    async def execute(self, plan: RebalancePlan) -> list[Order]:
+        """Run the plan against the broker — calls broker.orders.create per order."""
         out: list[Order] = []
         for req in plan.orders:
             order = await self.broker.orders.create(req)
