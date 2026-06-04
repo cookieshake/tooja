@@ -756,12 +756,14 @@ def investor_flow_from_row(symbol: Symbol, item: Any, raw_row: dict[str, Any]) -
     )
 
 
-_WS_QUOTE_COLUMNS = (
-    "MKSC_SHRN_ISCD", "STCK_CNTG_HOUR", "STCK_PRPR", "PRDY_VRSS_SIGN",
-    "PRDY_VRSS", "PRDY_CTRT", "WGHN_AVRG_STCK_PRC", "STCK_OPRC",
-    "STCK_HGPR", "STCK_LWPR", "ASKP1", "BIDP1", "CNTG_VOL", "ACML_VOL",
-    "ACML_TR_PBMN",
+# Pulled from the raw subscriber's COLUMNS. KIS H0STCNT0 has 46 fields per
+# record; defining only a prefix here silently misaligns CCLD_DVSN (trade
+# side) and corrupts every record after the first in multi-record packets.
+from tooja.brokers.kis.raw.domestic_stock_ws.h0stcnt0 import (
+    H0stcnt0Subscriber as _H0stcnt0Subscriber,
 )
+
+_WS_QUOTE_COLUMNS = _H0stcnt0Subscriber.COLUMNS
 
 
 # Sourced from the raw H0STCNI0 subscriber's COLUMNS — full field order matters

@@ -55,9 +55,13 @@ async def _call_with_retries(
     tr_id: str | None,
     extra_headers: dict[str, str] | None,
 ) -> object:
+    # Token-expiry retry is orthogonal to rate-limit retries: it doesn't
+    # consume an `attempt`. Otherwise a token expiring on the very last attempt
+    # would fall through to the unreachable branch instead of reissuing.
     cfg = broker.rate_limit
     token_retry_used = False
-    for attempt in range(cfg.max_retries + 1):
+    attempt = 0
+    while attempt <= cfg.max_retries:
         try:
             return await _call_once(
                 broker, executor_cls, request,
@@ -68,7 +72,7 @@ async def _call_with_retries(
                 raise
             broker.invalidate_token()
             token_retry_used = True
-            continue
+            continue  # do NOT increment attempt — token retry is free
         except KisApiError as e:
             if e.code != "EGW00201" or attempt == cfg.max_retries:
                 raise _translate(e, executor_cls.PATH) from e
@@ -78,6 +82,7 @@ async def _call_with_retries(
                 executor_cls.PATH, backoff, attempt + 1, cfg.max_retries,
             )
             await asyncio.sleep(backoff)
+            attempt += 1
     # Unreachable: loop either returns or raises on every path above.
     raise AssertionError("unreachable")
 

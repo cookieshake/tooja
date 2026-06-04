@@ -117,6 +117,62 @@ def test_pingpong_triggers_echo_send():
     stream._ws.send.assert_called_once_with(ping_frame)
 
 
+def test_quote_columns_match_raw_subscriber():
+    """_WS_QUOTE_COLUMNS must equal the raw H0STCNT0 COLUMNS source of truth
+    so multi-record packets stay aligned and CCLD_DVSN is at the right index."""
+    from tooja.brokers.kis.raw.domestic_stock_ws.h0stcnt0 import H0stcnt0Subscriber
+    assert _WS_QUOTE_COLUMNS == H0stcnt0Subscriber.COLUMNS
+    # Trade side mapping in trade_from_ws_record reads CCLD_DVSN.
+    assert "CCLD_DVSN" in _WS_QUOTE_COLUMNS
+
+
+def test_trade_topic_uses_full_quote_columns():
+    """Regression: _TRADE_TOPIC must share _WS_QUOTE_COLUMNS, not a prefix+1
+    variant — otherwise CCLD_DVSN lands on the wrong index."""
+    from tooja.brokers.kis.stream import _TRADE_TOPIC, _QUOTE_TOPIC
+    assert _TRADE_TOPIC.columns == _QUOTE_TOPIC.columns
+
+
+def test_orderbook_columns_match_raw_subscriber():
+    from tooja.brokers.kis.raw.domestic_stock_ws.h0stasp0 import H0stasp0Subscriber
+    from tooja.brokers.kis.stream import _ORDERBOOK_TOPIC
+    assert _ORDERBOOK_TOPIC.columns == H0stasp0Subscriber.COLUMNS
+
+
+def test_multi_record_quote_frame_parses_all_records():
+    """A 2-record H0STCNT0 frame: with the right per=46 stride, both records
+    should produce a Quote. A short stride would garble record #2."""
+    from tooja.brokers.kis.raw.domestic_stock_ws.h0stcnt0 import H0stcnt0Subscriber
+
+    cols = H0stcnt0Subscriber.COLUMNS
+    # Build two records with distinct tickers; only the fields used by
+    # quote_from_ws_record need real values, the rest can be empty strings.
+    def _make(ticker: str, time_s: str, prpr: str) -> list[str]:
+        vals = [""] * len(cols)
+        idx = {c: i for i, c in enumerate(cols)}
+        vals[idx["MKSC_SHRN_ISCD"]] = ticker
+        vals[idx["STCK_CNTG_HOUR"]] = time_s
+        vals[idx["STCK_PRPR"]] = prpr
+        vals[idx["PRDY_VRSS_SIGN"]] = "2"
+        return vals
+
+    body_tokens = _make("005930", "143000", "70000") + _make("035720", "143100", "55000")
+    body = "^".join(body_tokens)
+    frame = f"0|H0STCNT0|2|{body}"
+
+    broker = _fake_broker()
+    topic = _SubscriptionTopic(
+        tr_id="H0STCNT0", columns=cols, mapper=quote_from_ws_record,
+    )
+    stream = KisWsStream(
+        broker, topic, symbols=["005930"],
+        include_control=False, auto_reconnect=False, buffer_size=10,
+    )
+    out = stream._parse(frame)
+    assert len(out) == 2
+    assert {q.symbol.ticker for q in out} == {"005930", "035720"}
+
+
 def test_pingpong_echo_swallows_send_failure():
     """If the WS is closing when we try to echo PINGPONG, the background task
     must not raise an unhandled exception into the loop."""

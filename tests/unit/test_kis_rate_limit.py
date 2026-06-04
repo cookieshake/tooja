@@ -153,6 +153,55 @@ async def test_call_respects_custom_max_retries(monkeypatch):
     assert len(calls) == 3
 
 
+@pytest.mark.asyncio
+async def test_token_retry_does_not_consume_rate_limit_attempt(monkeypatch):
+    """Regression: token-expiry retry must not count against max_retries.
+    Previously a TokenExpiredError on the final attempt fell through to the
+    unreachable branch instead of reissuing."""
+    from tooja.brokers.kis import _call as call_mod
+    from tooja.brokers.kis.raw.base import KisApiError, TokenExpiredError
+
+    seen: list[str] = []
+
+    async def fake_once(broker, executor_cls, request, *, tr_id, extra_headers):
+        # Burn all rate-limit attempts with EGW00201, then on the very last
+        # attempt raise TokenExpiredError. If the bug is present, this would
+        # land on the unreachable branch.
+        seen.append("call")
+        if len(seen) <= 2:
+            raise KisApiError("초당 거래건수 초과", "EGW00201", "1")
+        if len(seen) == 3:
+            raise TokenExpiredError("EGW00123")
+        return "OK"
+
+    monkeypatch.setattr(call_mod, "_call_once", fake_once)
+
+    class _Sentinel:
+        PATH = "/x"
+
+    out = await call_mod.call(_fake_broker(max_retries=2), _Sentinel, request=None)
+    assert out == "OK"
+    assert len(seen) == 4  # 2 rate-limit + 1 token-expiry + 1 success
+
+
+@pytest.mark.asyncio
+async def test_token_retry_used_twice_raises(monkeypatch):
+    """If TokenExpiredError fires twice in a row, propagate it."""
+    from tooja.brokers.kis import _call as call_mod
+    from tooja.brokers.kis.raw.base import TokenExpiredError
+
+    async def always_token_expired(broker, executor_cls, request, *, tr_id, extra_headers):
+        raise TokenExpiredError("EGW00123")
+
+    monkeypatch.setattr(call_mod, "_call_once", always_token_expired)
+
+    class _Sentinel:
+        PATH = "/x"
+
+    with pytest.raises(TokenExpiredError):
+        await call_mod.call(_fake_broker(), _Sentinel, request=None)
+
+
 def test_rate_limit_config_validation():
     from tooja.core.rate_limit import RateLimitConfig
 

@@ -39,18 +39,16 @@ _QUOTE_TOPIC = _SubscriptionTopic(
 
 _TRADE_TOPIC = _SubscriptionTopic(
     tr_id="H0STCNT0",
-    columns=_WS_QUOTE_COLUMNS + ("CCLD_DVSN",),
+    columns=_WS_QUOTE_COLUMNS,  # CCLD_DVSN is at index 21 in the full 46-field set.
     mapper=trade_from_ws_record,
 )
 
 
-_ORDERBOOK_COLUMNS = (
-    "MKSC_SHRN_ISCD", "BSOP_HOUR", "HOUR_CLS_CODE",
-    *(f"ASKP{i}" for i in range(1, 11)),
-    *(f"BIDP{i}" for i in range(1, 11)),
-    *(f"ASKP_RSQN{i}" for i in range(1, 11)),
-    *(f"BIDP_RSQN{i}" for i in range(1, 11)),
+# Source from raw subscriber to avoid the same prefix-only bug as H0STCNT0.
+from tooja.brokers.kis.raw.domestic_stock_ws.h0stasp0 import (
+    H0stasp0Subscriber as _H0stasp0Subscriber,
 )
+_ORDERBOOK_COLUMNS = _H0stasp0Subscriber.COLUMNS
 
 _ORDERBOOK_TOPIC = _SubscriptionTopic(
     tr_id="H0STASP0",
