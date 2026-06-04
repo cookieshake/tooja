@@ -175,6 +175,6 @@ class Rebalancer:
             quote = await self.broker.market.get_quote(sym)
         except Exception:  # noqa: BLE001 — price unavailable -> skip this symbol
             return None
-        if quote.price.currency is not currency:
+        if quote.price.currency != currency:
             return None
         return quote.price.amount
