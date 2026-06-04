@@ -8,6 +8,7 @@ import httpx
 
 from tooja.brokers.kis.account import KisAccountClient
 from tooja.brokers.kis.analytics import KisAnalyticsClient
+from tooja.brokers.kis._rate_limit import TokenBucket
 from tooja.brokers.kis.auth import TokenManager
 from tooja.brokers.kis.credentials import KisCredentials
 from tooja.brokers.kis.info import KisInfoClient
@@ -57,6 +58,7 @@ class KisBroker(Broker):
 
         self._http: httpx.AsyncClient | None = None
         self._tokens: TokenManager | None = None
+        self._rate_limiter = TokenBucket(capacity=self.rate_limit_per_sec)
         self._open = False
 
         # Attach subclients
