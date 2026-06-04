@@ -113,6 +113,47 @@ async def test_create_market_order_uses_dvsn_01(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_uses_odno_filter_for_single_call(monkeypatch):
+    """Regression: orders.get must pass ODNO to inquire-daily-ccld so we hit
+    KIS once instead of paginating up to 50 pages of every order."""
+    from tooja.brokers.kis import orders as orders_mod
+    from tooja.brokers.kis.raw.domestic_stock_trading.inquire_daily_ccld import (
+        InquireDailyCcldExecutor,
+    )
+
+    seen: list[str] = []
+
+    async def fake_call(broker, executor_cls, request, *, tr_id=None, extra_headers=None):
+        if executor_cls is InquireDailyCcldExecutor:
+            seen.append(request.ODNO)
+            row = SimpleNamespace(
+                odno="0000000001", pdno="005930",
+                tot_ord_qty="10", tot_ccld_qty="0",
+                sll_buy_dvsn_cd="02",
+                avg_prvs=None, ord_unpr="70000",
+                ord_dvsn_cd="00", ord_dt=None, ord_tmd=None,
+                rmn_qty=None,
+                model_dump=lambda: {"odno": "0000000001"},
+            )
+            return SimpleNamespace(output1=[row], headers=None)
+        raise AssertionError(f"unexpected executor: {executor_cls}")
+
+    monkeypatch.setattr(orders_mod, "call", fake_call)
+
+    broker = _broker(env="real")
+    await broker.open()
+    try:
+        client = KisOrdersClient(broker)
+        order = await client.get("0000000001")
+    finally:
+        await broker.close()
+
+    assert order.order_id == "0000000001"
+    # Exactly one call, with ODNO filter.
+    assert seen == ["0000000001"]
+
+
+@pytest.mark.asyncio
 async def test_cancel_sends_qty_zero_for_full_cancel(monkeypatch):
     """Regression: full cancel must send ORD_QTY=0 + QTY_ALL_ORD_YN=Y so KIS
     doesn't reject with 'quantity exceeded' for partially-filled orders."""

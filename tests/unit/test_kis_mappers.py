@@ -27,6 +27,15 @@ def _ns(**kw) -> SimpleNamespace:
     return SimpleNamespace(**kw)
 
 
+def test_dec_float_routes_through_str_to_avoid_binary_artifacts():
+    """Regression: Decimal(0.1) yields 0.1000000000000000055511151231257827021181583404541015625;
+    we must convert floats via str() first to get a clean 0.1."""
+    from tooja.brokers.kis._mappers import _dec
+
+    assert _dec(0.1) == Decimal("0.1")
+    assert _dec(70000.50) == Decimal("70000.5")
+
+
 def test_quote_basic_fields():
     output = _ns(
         stck_prpr="70000", prdy_vrss="500", prdy_vrss_sign="2",

@@ -92,6 +92,21 @@ def test_token_load_returns_none_on_malformed_json(tmp_path, monkeypatch):
     assert _load_token() is None
 
 
+def test_token_save_is_atomic_via_temp_rename(tmp_path, monkeypatch):
+    """Regression: _write_json must stage into a sibling .tmp then rename,
+    so a concurrent reader never sees a half-written file."""
+    import tooja.brokers.kis.auth as auth_mod
+
+    token_file = tmp_path / "token.json"
+    monkeypatch.setattr(auth_mod, "_TOKEN_FILE", token_file)
+
+    tc = TokenCache(access_token="abc", expires_at=_NOW + timedelta(hours=1))
+    _save_token(tc)
+    # Final file present, .tmp gone.
+    assert token_file.exists()
+    assert not token_file.with_suffix(token_file.suffix + ".tmp").exists()
+
+
 def test_token_load_returns_none_when_missing_fields(tmp_path, monkeypatch):
     import tooja.brokers.kis.auth as auth_mod
 

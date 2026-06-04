@@ -32,6 +32,10 @@ def _dec(v: Any) -> Decimal | None:
         return None
     if isinstance(v, Decimal):
         return v
+    if isinstance(v, float):
+        # Decimal(0.1) leaks binary float artifacts (0.1000000000…0555…).
+        # Route floats through str so Decimal sees the rendered value.
+        v = str(v)
     if isinstance(v, str):
         v = v.strip().replace(",", "")
         if not v:

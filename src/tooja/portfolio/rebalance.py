@@ -91,14 +91,16 @@ class Rebalancer:
         current_price: dict[Symbol, Decimal] = {}
         unpriced: set[Symbol] = set()
         for pos in balance.positions:
-            if pos.current_price is not None and pos.current_price.currency is currency:
+            if pos.current_price is not None and pos.current_price.currency == currency:
                 price = pos.current_price.amount
             else:
                 price = await self._lookup_price(pos.symbol, currency) or Decimal(0)
             if price > 0:
                 current_price[pos.symbol] = price
                 current_value[pos.symbol] = pos.qty * price
-            elif pos.qty > 0:
+            elif pos.qty != 0:
+                # Catches shorts (qty<0) too — silently dropping them would
+                # leak into the BUY pass with actual=0.
                 unpriced.add(pos.symbol)
 
         orders: list[OrderRequest] = []

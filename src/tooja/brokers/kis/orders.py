@@ -191,9 +191,16 @@ class KisOrdersClient(OrdersClient):
         })
 
     async def get(self, order_id: str) -> Order:
-        for o in await self.list_orders(status="all"):
-            if o.order_id == order_id:
-                return o
+        # KIS inquire-daily-ccld supports ODNO filtering — one call beats
+        # walking up to 50 paginated pages of every order in the window.
+        rows = await self._iter_ccld(
+            symbol=None, since=None, until=None,
+            status="all", only_filled=False, order_id=order_id,
+        )
+        for row in rows:
+            order = order_from_daily_ccld_row(row, row.model_dump())
+            if order is not None and order.order_id == order_id:
+                return order
         raise OrderNotFound(
             f"Order not found: {order_id}", broker="kis",
         )
@@ -258,6 +265,7 @@ class KisOrdersClient(OrdersClient):
         until: date | datetime | None,
         status: str,
         only_filled: bool,
+        order_id: str | None = None,
     ) -> list:
         creds = self._broker.credentials
         today = kst_today()
@@ -274,7 +282,7 @@ class KisOrdersClient(OrdersClient):
             SLL_BUY_DVSN_CD="00",
             PDNO=pdno,
             ORD_GNO_BRNO="",
-            ODNO="",
+            ODNO=order_id or "",
             CCLD_DVSN=ccld_dvsn,
             INQR_DVSN="00",
             INQR_DVSN_1="",

@@ -143,8 +143,16 @@ class KisWsStream(Generic[T]):
         approval = await self._broker.get_approval_key()
         self._approval = approval
         self._ws = await websockets.connect(self._url)
-        for sym in list(self._symbols):
-            await self._send_subscribe(sym, TR_TYPE_SUBSCRIBE)
+        try:
+            for sym in list(self._symbols):
+                await self._send_subscribe(sym, TR_TYPE_SUBSCRIBE)
+        except Exception:
+            # Don't leak the freshly-opened socket if subscribe fails midway.
+            try:
+                await self._ws.close()
+            finally:
+                self._ws = None
+            raise
 
     async def _send_subscribe(self, sym: Symbol, tr_type: str) -> None:
         if self._ws is None:
@@ -301,7 +309,14 @@ class KisOrderUpdateStream:
         approval = await self._broker.get_approval_key()
         self._approval = approval
         self._ws = await websockets.connect(self._url)
-        await self._send_subscribe(TR_TYPE_SUBSCRIBE)
+        try:
+            await self._send_subscribe(TR_TYPE_SUBSCRIBE)
+        except Exception:
+            try:
+                await self._ws.close()
+            finally:
+                self._ws = None
+            raise
 
     async def _send_subscribe(self, tr_type: str) -> None:
         assert self._ws is not None

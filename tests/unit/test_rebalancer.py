@@ -350,6 +350,43 @@ async def test_compute_plan_exits_position_without_current_price():
 
 
 @pytest.mark.asyncio
+async def test_unpriced_short_position_marked_unpriced_not_dropped():
+    """Regression: a short position (qty<0) with unresolvable price must be
+    flagged unpriced, not silently dropped. Otherwise the matching target
+    would treat actual=0 and emit a runaway BUY."""
+    from tooja.core.enums import Currency
+    from tooja.core.models import Balance, Position
+    from tooja.core.money import Money
+
+    sym = Symbol(ticker="005930")
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        positions=[
+            Position(
+                symbol=sym, qty=Decimal("-10"),  # short
+                avg_price=Money(amount=Decimal("70000"), currency=Currency.KRW),
+                current_price=None,
+            ),
+        ],
+    )
+
+    class _FailingMarket:
+        _broker_name = "stub"
+        async def get_quote(self, symbol):
+            raise RuntimeError("price unavailable")
+
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    rb.broker.market = _FailingMarket()
+    plan = await rb.compute_plan()
+    # Unpriced short → target skipped, no BUY emitted.
+    assert plan.orders == []
+
+
+@pytest.mark.asyncio
 async def test_plan_sells_before_buys():
     """Cash from SELLs must be freed before BUYs hit, otherwise the broker
     rejects them for insufficient funds."""
