@@ -18,7 +18,7 @@ uv-*.lock
 .env.*
 !.env.example
 
-# KIS spec cache + token/approval_key (secrets)
+# Per-broker runtime cache: OAuth tokens, approval keys, captured raw responses
 .kis-spec/
 
 # Superpowers working docs (specs/plans) — local-only, do not commit

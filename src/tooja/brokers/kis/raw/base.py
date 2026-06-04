@@ -33,7 +33,7 @@ SDecimal = Annotated[Decimal | None, BeforeValidator(_parse_decimal)]
 
 
 class KisRequestHeader(BaseModel):
-    """KIS API 요청 헤더."""
+    """KIS API request header."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -52,7 +52,7 @@ class KisRequestHeader(BaseModel):
 
 
 class KisResponseHeader(BaseModel):
-    """KIS API 응답 헤더."""
+    """KIS API response header."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -63,7 +63,7 @@ class KisResponseHeader(BaseModel):
 
 
 class KisBaseModel(BaseModel):
-    """응답 헤더를 보존하는 KIS 응답 베이스 모델."""
+    """KIS response base model that preserves response headers."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -75,7 +75,7 @@ class KisBaseModel(BaseModel):
 
 
 class KisCommonResponse(KisBaseModel):
-    """공통 응답 필드 (rt_cd / msg_cd / msg1)."""
+    """Common response fields (rt_cd / msg_cd / msg1)."""
 
     rt_cd: str
     msg_cd: str
@@ -91,7 +91,7 @@ class KisApiError(Exception):
 
 
 class TokenExpiredError(Exception):
-    """토큰 만료 (EGW00123)."""
+    """Token expired (EGW00123)."""
 
 
 TRequest = TypeVar("TRequest", bound=BaseModel)
@@ -101,7 +101,7 @@ HeadersLike = KisRequestHeader | dict[str, str] | None
 
 
 class ApiExecutor(Generic[TRequest, TResponse]):
-    """단일 KIS 엔드포인트 실행기."""
+    """Executor for a single KIS endpoint."""
 
     PATH: ClassVar[str]
     METHOD: ClassVar[str] = "GET"
@@ -208,7 +208,7 @@ class ApiExecutor(Generic[TRequest, TResponse]):
 
 
 class PaginatedApiExecutor(ApiExecutor[TRequest, TResponse]):
-    """tr_cont 연속조회를 지원하는 실행기 (페이지마다 새 request 생성)."""
+    """Executor that supports tr_cont continuation queries (one request per page)."""
 
     async def paginate(self) -> AsyncGenerator[TResponse, None]:
         request = self._reset_pagination_keys(self.request)
