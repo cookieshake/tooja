@@ -54,8 +54,24 @@ def _money_krw(v: Any) -> Money | None:
     return Money(amount=d, currency=Currency.KRW)
 
 
-def _kst_now() -> datetime:
+def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _kst_today() -> date:
+    """Today's date in KST. Diverges from system-local date() across the
+    UTC midnight ~ 09:00 KST window if the host is in UTC."""
+    from datetime import timedelta
+    return (datetime.now(timezone.utc) + timedelta(hours=KST_OFFSET_HOURS)).date()
+
+
+def kst_today() -> date:
+    """Public helper for adapters that need to anchor today to KST."""
+    return _kst_today()
+
+
+def kst_today_yyyymmdd() -> str:
+    return _kst_today().strftime("%Y%m%d")
 
 
 def _parse_kst_date(s: str) -> date | None:
@@ -137,7 +153,7 @@ def quote_from_overseas_price(symbol: Symbol, output: Any, raw: dict[str, Any]) 
     if diff is not None and sign in ("4", "5") and diff.amount > 0:
         diff = -diff
     return Quote(
-        symbol=symbol, price=price, time=_kst_now(),
+        symbol=symbol, price=price, time=_utc_now(),
         change=diff,
         change_rate=_dec(getattr(output, "rate", None)),
         prev_close=_money_in(currency, getattr(output, "base", None)),
@@ -183,7 +199,7 @@ def quote_from_inquire_price(
     return Quote(
         symbol=symbol,
         price=price,
-        time=_kst_now(),
+        time=_utc_now(),
         change=change,
         change_rate=_dec(getattr(output, "prdy_ctrt", None)),
         open=_money_krw(getattr(output, "stck_oprc", None)),
@@ -218,8 +234,8 @@ def orderbook_from_inquire_asking(
             bids.append(OrderbookLevel(price=bid_p, qty=bid_q))
 
     accept_t = getattr(output1, "aspr_acpt_hour", None)
-    today = _kst_now().date().strftime("%Y%m%d")
-    time = _parse_kst_datetime(today, accept_t) or _kst_now()
+    today = kst_today_yyyymmdd()
+    time = _parse_kst_datetime(today, accept_t) or _utc_now()
 
     return Orderbook(symbol=symbol, time=time, bids=bids, asks=asks, raw=raw)
 
@@ -361,7 +377,7 @@ def order_from_daily_ccld_row(item: Any, raw_row: dict[str, Any]) -> "Order | No
     order_type = "market" if ord_dvsn == "01" else "limit"
     ord_dt = getattr(item, "ord_dt", None)
     ord_tmd = getattr(item, "ord_tmd", None)
-    submitted = _parse_kst_datetime(ord_dt, ord_tmd) or _kst_now()
+    submitted = _parse_kst_datetime(ord_dt, ord_tmd) or _utc_now()
     ccld_status = getattr(item, "rmn_qty", None)
     status = map_order_status(None, qty, filled)
     return Order(
@@ -780,8 +796,8 @@ def order_update_from_ws_record(record: dict[str, str]) -> "OrderUpdate | None":
     else:
         status = OrderStatus.OPEN
     price = _money_krw(record.get("CNTG_UNPR"))
-    today = _kst_now().date().strftime("%Y%m%d")
-    when = _parse_kst_datetime(today, record.get("STCK_CNTG_HOUR")) or _kst_now()
+    today = kst_today_yyyymmdd()
+    when = _parse_kst_datetime(today, record.get("STCK_CNTG_HOUR")) or _utc_now()
     return OrderUpdate(
         order_id=odno,
         symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),
@@ -807,8 +823,8 @@ def quote_from_ws_record(record: dict[str, str]) -> "Quote | None":
     sign = record.get("PRDY_VRSS_SIGN")
     if change is not None and sign in ("4", "5") and change.amount > 0:
         change = -change
-    today = _kst_now().date().strftime("%Y%m%d")
-    when = _parse_kst_datetime(today, record.get("STCK_CNTG_HOUR")) or _kst_now()
+    today = kst_today_yyyymmdd()
+    when = _parse_kst_datetime(today, record.get("STCK_CNTG_HOUR")) or _utc_now()
     return Quote(
         symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),
         price=price, time=when, change=change,
@@ -829,8 +845,8 @@ def trade_from_ws_record(record: dict[str, str]) -> "Trade | None":
     qty = _dec(record.get("CNTG_VOL"))
     if not ticker or price is None or qty is None:
         return None
-    today = _kst_now().date().strftime("%Y%m%d")
-    when = _parse_kst_datetime(today, record.get("STCK_CNTG_HOUR")) or _kst_now()
+    today = kst_today_yyyymmdd()
+    when = _parse_kst_datetime(today, record.get("STCK_CNTG_HOUR")) or _utc_now()
     side_code = record.get("CCLD_DVSN")
     side: OrderSide | None = (
         OrderSide.BUY if side_code == "1" else OrderSide.SELL if side_code == "5" else None
@@ -859,8 +875,8 @@ def orderbook_from_ws_record(record: dict[str, str], *, depth: int = 10) -> "Ord
         bq = _dec(record.get(f"BIDP_RSQN{i}"))
         if bp is not None and bq is not None and bq > 0 and bp.amount > 0:
             bids.append(OrderbookLevel(price=bp, qty=bq))
-    today = _kst_now().date().strftime("%Y%m%d")
-    when = _parse_kst_datetime(today, record.get("BSOP_HOUR")) or _kst_now()
+    today = kst_today_yyyymmdd()
+    when = _parse_kst_datetime(today, record.get("BSOP_HOUR")) or _utc_now()
     return Orderbook(
         symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),
         time=when, bids=bids, asks=asks, raw=record,
@@ -880,7 +896,7 @@ def fill_from_daily_ccld_row(item: Any, raw_row: dict[str, Any]) -> "Fill | None
     side = OrderSide.BUY if side_code == "02" else OrderSide.SELL
     ord_dt = getattr(item, "ord_dt", None)
     ord_tmd = getattr(item, "ord_tmd", None)
-    when = _parse_kst_datetime(ord_dt, ord_tmd) or _kst_now()
+    when = _parse_kst_datetime(ord_dt, ord_tmd) or _utc_now()
     return Fill(
         order_id=odno,
         symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),

@@ -69,10 +69,19 @@ class Rebalancer:
             )
 
     async def compute_plan(self) -> RebalancePlan:
-        """Diff current vs target weights and produce the order list."""
+        """Diff current vs target weights and produce the order list.
+
+        Held positions whose price cannot be resolved (broker omitted
+        current_price and market.get_quote also fails) are flagged as
+        `unpriced`. Any target symbol whose corresponding position is
+        unpriced is skipped — otherwise treating its actual value as 0
+        would generate a runaway BUY for the entire target weight.
+        """
         balance = await self.broker.account.get_balance()
-        if balance.total_asset is None:
-            raise ValueError("broker returned no total_asset — cannot compute plan")
+        if balance.total_asset is None or balance.total_asset.amount <= 0:
+            raise ValueError(
+                "broker returned no or non-positive total_asset — cannot compute plan"
+            )
         total = balance.total_asset.amount
         currency = balance.total_asset.currency
 
@@ -80,21 +89,30 @@ class Rebalancer:
 
         current_value: dict[Symbol, Decimal] = {}
         current_price: dict[Symbol, Decimal] = {}
+        unpriced: set[Symbol] = set()
         for pos in balance.positions:
-            if pos.current_price is None:
-                continue
-            if pos.current_price.currency is not currency:
-                continue
-            current_price[pos.symbol] = pos.current_price.amount
-            current_value[pos.symbol] = pos.qty * pos.current_price.amount
+            if pos.current_price is not None and pos.current_price.currency is currency:
+                price = pos.current_price.amount
+            else:
+                price = await self._lookup_price(pos.symbol, currency) or Decimal(0)
+            if price > 0:
+                current_price[pos.symbol] = price
+                current_value[pos.symbol] = pos.qty * price
+            elif pos.qty > 0:
+                unpriced.add(pos.symbol)
 
         orders: list[OrderRequest] = []
         drift = Decimal(0)
 
         for t in self.targets:
+            if t.symbol in unpriced:
+                # Cannot rebalance this target without a valid price for the
+                # existing holding — issuing a BUY based on actual=0 would be
+                # catastrophic.
+                continue
             target_value = investable * t.weight
             actual = current_value.get(t.symbol, Decimal(0))
-            actual_weight = (actual / total) if total > 0 else Decimal(0)
+            actual_weight = actual / total
             drift += abs(actual_weight - t.weight)
 
             diff_value = target_value - actual
@@ -123,9 +141,9 @@ class Rebalancer:
         for pos in balance.positions:
             if pos.symbol in target_syms or pos.qty <= 0:
                 continue
-            if pos.current_price is not None and pos.current_price.currency is currency:
-                val = pos.qty * pos.current_price.amount
-                drift += (val / total) if total > 0 else Decimal(0)
+            val = current_value.get(pos.symbol)
+            if val is not None:
+                drift += val / total
             orders.append(MarketOrder(symbol=pos.symbol, side=OrderSide.SELL, qty=pos.qty))
 
         return RebalancePlan(orders=orders, expected_drift=drift)

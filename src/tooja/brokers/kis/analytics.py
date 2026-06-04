@@ -55,14 +55,18 @@ if TYPE_CHECKING:
 
 
 def _as_symbol(s: Symbol | str | Exchange) -> Symbol:
-    if isinstance(s, Symbol):
-        return s
     if isinstance(s, Exchange):
         raise UnsupportedOperation(
             "KIS analytics requires a Symbol, not an Exchange (market-level not supported)",
             broker="kis",
         )
-    return Symbol.parse(s)
+    sym = s if isinstance(s, Symbol) else Symbol.parse(s)
+    if sym.exchange not in (Exchange.KRX, Exchange.NXT):
+        raise UnsupportedOperation(
+            f"KIS analytics supports domestic KRX/NXT symbols only (got {sym.exchange})",
+            broker="kis",
+        )
+    return sym
 
 
 def _yyyymmdd(d: date) -> str:

@@ -195,6 +195,63 @@ async def test_compute_plan_skips_below_min_order_value():
 
 
 @pytest.mark.asyncio
+async def test_compute_plan_skips_target_with_unpriced_holding():
+    """Critical regression: if an existing target position has no resolvable
+    price, compute_plan must NOT generate a BUY based on actual=0. Doing so
+    would attempt to invest the full target_value, doubling the position."""
+    from tooja.core.enums import Currency
+    from tooja.core.models import Balance, Position
+    from tooja.core.money import Money
+
+    sym = Symbol(ticker="005930")
+    balance = Balance(
+        total_asset=Money(amount=Decimal("100000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("0"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=sym, qty=Decimal("100"),
+                avg_price=Money(amount=Decimal("70000"), currency=Currency.KRW),
+                current_price=None,  # KIS sometimes omits — halted, etc.
+            ),
+        ],
+    )
+
+    # Broker whose market.get_quote also fails (unpriced everywhere).
+    class _FailingMarket:
+        _broker_name = "stub"
+        async def get_quote(self, symbol):
+            raise RuntimeError("price unavailable")
+
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    rb.broker.market = _FailingMarket()
+    plan = await rb.compute_plan()
+    # No order should be emitted — the target is skipped because price is unknown.
+    assert plan.orders == []
+
+
+@pytest.mark.asyncio
+async def test_compute_plan_rejects_non_positive_total_asset():
+    from tooja.core.enums import Currency
+    from tooja.core.models import Balance
+    from tooja.core.money import Money
+
+    sym = Symbol(ticker="005930")
+    balance = Balance(
+        total_asset=Money(amount=Decimal("0"), currency=Currency.KRW),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+    )
+    with pytest.raises(ValueError, match="total_asset"):
+        await rb.compute_plan()
+
+
+@pytest.mark.asyncio
 async def test_compute_plan_exits_position_without_current_price():
     """Regression: positions whose current_price is None must still be exited."""
     from tooja.core.enums import Currency, OrderSide

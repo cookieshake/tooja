@@ -17,6 +17,7 @@ from tooja.brokers.kis._call import call
 from tooja.brokers.kis._mappers import (
     dividend_from_row,
     financial_summary_from_ratio_row,
+    kst_today,
     stock_info_from_search,
     trading_halt_from_vi_row,
 )
@@ -41,8 +42,8 @@ from tooja.brokers.kis.raw.domestic_stock_info.search_stock_info import (
     SearchStockInfoRequest,
 )
 from tooja.core.clients import InfoClient
-from tooja.core.enums import FinancialPeriod
-from tooja.core.errors import SymbolNotFound
+from tooja.core.enums import Exchange, FinancialPeriod
+from tooja.core.errors import SymbolNotFound, UnsupportedOperation
 from tooja.core.models import (
     Dividend,
     FinancialSummary,
@@ -56,7 +57,13 @@ if TYPE_CHECKING:
 
 
 def _as_symbol(s: Symbol | str) -> Symbol:
-    return s if isinstance(s, Symbol) else Symbol.parse(s)
+    sym = s if isinstance(s, Symbol) else Symbol.parse(s)
+    if sym.exchange not in (Exchange.KRX, Exchange.NXT):
+        raise UnsupportedOperation(
+            f"KIS info supports domestic KRX/NXT symbols only (got {sym.exchange})",
+            broker="kis",
+        )
+    return sym
 
 
 def _yyyymmdd(d: date) -> str:
@@ -85,7 +92,7 @@ class KisInfoClient(InfoClient):
         self, symbol: Symbol | str, *, since: date | None = None,
     ) -> list[Dividend]:
         sym = _as_symbol(symbol)
-        today = date.today()
+        today = kst_today()
         start = since or (today - timedelta(days=365))
         req = DividendRequest(
             CTS=" ", GB1="0",
@@ -139,7 +146,7 @@ class KisInfoClient(InfoClient):
         closest analogue. Permanent halts are reflected in inquire-price's
         trht_yn per-symbol — not surfaced here.
         """
-        d = on_date or date.today()
+        d = on_date or kst_today()
         req = InquireViStatusRequest(
             FID_DIV_CLS_CODE="0",
             FID_COND_SCR_DIV_CODE="20139",

@@ -22,6 +22,7 @@ from tooja.brokers.kis._call import call
 from tooja.brokers.kis._mappers import (
     fill_from_daily_ccld_row,
     kis_ord_dvsn,
+    kst_today,
     order_from_daily_ccld_row,
 )
 from tooja.brokers.kis.raw.domestic_stock_trading.inquire_daily_ccld import (
@@ -252,7 +253,7 @@ class KisOrdersClient(OrdersClient):
         only_filled: bool,
     ) -> list:
         creds = self._broker.credentials
-        today = date.today()
+        today = kst_today()
         end_d = _yyyymmdd(until) if until else _yyyymmdd(today)
         start_d = _yyyymmdd(since) if since else _yyyymmdd(today)
         pdno = _as_symbol(symbol).ticker if symbol else None
@@ -313,6 +314,6 @@ def _parse_ord_tmd(s: str | None) -> datetime | None:
         h, m, sec = int(sp[:2]), int(sp[2:4]), int(sp[4:6])
     except ValueError:
         return None
-    today = date.today()
+    today = kst_today()
     kst = datetime(today.year, today.month, today.day, h, m, sec)
     return (kst - timedelta(hours=9)).replace(tzinfo=timezone.utc)

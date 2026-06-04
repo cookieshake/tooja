@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Literal
 from tooja.brokers.kis._call import call
 from tooja.brokers.kis._mappers import (
     excd_for,
+    kst_today,
     ohlcv_from_chartprice_item,
     ohlcv_from_intraday_item,
     ohlcv_from_overseas_daily_item,
@@ -160,7 +161,7 @@ class KisMarketClient(MarketClient):
     async def _daily_ohlcv(
         self, sym: Symbol, *, period: str, start, end, limit,
     ) -> list[OHLCV]:
-        today = date.today()
+        today = kst_today()
         end_d = _yyyymmdd(end) if end else today.strftime("%Y%m%d")
         if start is None:
             window_days = (limit or 100) * (1 if period == "D" else 7 if period == "W" else 31)
@@ -208,7 +209,7 @@ class KisMarketClient(MarketClient):
     async def _overseas_daily_ohlcv(
         self, sym: Symbol, excd: str, *, gubn: str, end, limit,
     ) -> list[OHLCV]:
-        end_d = _yyyymmdd(end) if end else date.today().strftime("%Y%m%d")
+        end_d = _yyyymmdd(end) if end else kst_today().strftime("%Y%m%d")
         req = DailypriceRequest(
             AUTH="", EXCD=excd, SYMB=sym.ticker, GUBN=gubn, BYMD=end_d, MODP="1",
         )
