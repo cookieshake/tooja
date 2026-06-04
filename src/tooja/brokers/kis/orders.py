@@ -1,15 +1,19 @@
-"""KIS Orders subclient.
+"""KIS Orders subclient — real POST to KIS.
 
-POLICY: order POST endpoints (create/cancel/replace) are ALWAYS dry-run.
-The raw payload is built and validated, then returned as an Order with
-status=PENDING and order_id="DRY-<uuid>"; no HTTP POST is sent to KIS.
+env="demo" routes to KIS mock server (가짜 자금). env="real" routes to live
+production server (실제 자금). The library does NOT add a dry-run flag; the
+env selection is the entire safety boundary, matching ccxt/Alpaca/IB
+convention.
 
-Inquiries (get / list / fills) are real reads.
+Side -> TR_ID:
+- BUY  : TTTC0012U (real) / VTTC0012U (demo)
+- SELL : TTTC0011U (real) / VTTC0011U (demo)
+
+cancel/replace: order-rvsecncl, RVSE_CNCL_DVSN_CD = 02 (cancel) / 01 (replace).
 """
 
 from __future__ import annotations
 
-import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, AsyncIterator, Literal
@@ -24,16 +28,28 @@ from tooja.brokers.kis.raw.domestic_stock_trading.inquire_daily_ccld import (
     InquireDailyCcldExecutor,
     InquireDailyCcldRequest,
 )
+from tooja.brokers.kis.raw.domestic_stock_trading.order_cash import (
+    OrderCashExecutor,
+    OrderCashRequest,
+)
+from tooja.brokers.kis.raw.domestic_stock_trading.order_rvsecncl import (
+    OrderRvsecnclExecutor,
+    OrderRvsecnclRequest,
+)
 from tooja.core.clients import OrdersClient
 from tooja.core.enums import OrderSide, OrderStatus, TimeInForce
-from tooja.core.errors import OrderNotFound
+from tooja.core.errors import OrderNotFound, OrderRejected
 from tooja.core.models import Fill, Order, OrderRequest, Symbol
 
 if TYPE_CHECKING:
     from tooja.brokers.kis.broker import KisBroker
 
 
-_DRY_RUN_PREFIX = "DRY-"
+# TR_IDs not exposed by the raw layer (raw defaults to sell).
+_TR_BUY_REAL = "TTTC0012U"
+_TR_BUY_DEMO = "VTTC0012U"
+_TR_SELL_REAL = "TTTC0011U"
+_TR_SELL_DEMO = "VTTC0011U"
 
 
 def _as_symbol(s: Symbol | str) -> Symbol:
@@ -46,6 +62,12 @@ def _yyyymmdd(d: date | datetime) -> str:
     return d.strftime("%Y%m%d")
 
 
+def _order_tr_id(side: OrderSide, is_virtual: bool) -> str:
+    if side is OrderSide.BUY:
+        return _TR_BUY_DEMO if is_virtual else _TR_BUY_REAL
+    return _TR_SELL_DEMO if is_virtual else _TR_SELL_REAL
+
+
 class KisOrdersClient(OrdersClient):
     _broker_name = "kis"
 
@@ -53,24 +75,36 @@ class KisOrdersClient(OrdersClient):
         self._broker = broker
 
     async def create(self, req: OrderRequest) -> Order:
-        """Dry-run order creation — builds the KIS payload but does not POST it."""
-        self._broker._require_open()
         sym = _as_symbol(req.symbol)
         creds = self._broker.credentials
         ord_dvsn = kis_ord_dvsn(req.type)
         price = getattr(req, "price", None)
         ord_unpr = str(price.amount) if price is not None else "0"
-        payload = {
-            "CANO": creds.cano,
-            "ACNT_PRDT_CD": creds.acnt_prdt_cd,
-            "PDNO": sym.ticker,
-            "ORD_DVSN": ord_dvsn,
-            "ORD_QTY": str(req.qty),
-            "ORD_UNPR": ord_unpr,
-        }
-        order_id = f"{_DRY_RUN_PREFIX}{uuid.uuid4().hex[:12]}"
+
+        raw_req = OrderCashRequest(
+            CANO=creds.cano,
+            ACNT_PRDT_CD=creds.acnt_prdt_cd,
+            PDNO=sym.ticker,
+            ORD_DVSN=ord_dvsn,
+            ORD_QTY=str(req.qty),
+            ORD_UNPR=ord_unpr,
+        )
+
+        tr_id = _order_tr_id(req.side, self._broker.is_virtual)
+        resp = await call(self._broker, OrderCashExecutor, raw_req, tr_id=tr_id)
+
+        out = getattr(resp, "output", []) or []
+        if not out or not getattr(out[0], "ODNO", None):
+            raise OrderRejected(
+                "KIS order-cash returned no ODNO", broker="kis",
+                endpoint=OrderCashExecutor.PATH,
+            )
+        head = out[0]
+        ord_tmd = getattr(head, "ORD_TMD", None)
+        submitted = _parse_ord_tmd(ord_tmd) or datetime.now(timezone.utc)
+
         return Order(
-            order_id=order_id,
+            order_id=head.ODNO,
             symbol=sym,
             side=req.side,
             qty=req.qty,
@@ -79,30 +113,19 @@ class KisOrdersClient(OrdersClient):
             type=req.type,
             price=price,
             stop_price=getattr(req, "stop_price", None),
-            status=OrderStatus.PENDING,
+            status=OrderStatus.OPEN,
             time_in_force=getattr(req, "time_in_force", TimeInForce.DAY),
             client_order_id=req.client_order_id,
-            submitted_at=datetime.now(timezone.utc),
-            raw={"dry_run": True, "payload": payload},
+            submitted_at=submitted,
+            raw={
+                "krx_fwdg_ord_orgno": getattr(head, "KRX_FWDG_ORD_ORGNO", None),
+                "ord_tmd": ord_tmd,
+            },
         )
 
     async def cancel(self, order_id: str) -> Order:
-        """Dry-run cancel."""
-        if not order_id.startswith(_DRY_RUN_PREFIX):
-            existing = await self.get(order_id)
-            return existing.model_copy(update={
-                "status": OrderStatus.CANCELLED,
-                "raw": {**existing.raw, "dry_run_cancel": True},
-            })
-        return Order(
-            order_id=order_id,
-            symbol=Symbol(ticker="000000"),
-            side=OrderSide.BUY, qty=Decimal(0),
-            type="market",
-            status=OrderStatus.CANCELLED,
-            submitted_at=datetime.now(timezone.utc),
-            raw={"dry_run": True},
-        )
+        existing = await self.get(order_id)
+        return await self._rvsecncl(existing, dvsn="02", new_qty=None, new_price=None)
 
     async def replace(
         self,
@@ -111,17 +134,53 @@ class KisOrdersClient(OrdersClient):
         qty: Decimal | None = None,
         price: Decimal | None = None,
     ) -> Order:
-        """Dry-run replace — looks up the existing order, applies overrides."""
         existing = await self.get(order_id)
-        updates: dict = {}
-        if qty is not None:
-            updates["qty"] = qty
-        if price is not None:
-            from tooja.core.enums import Currency
-            from tooja.core.money import Money
-            updates["price"] = Money(amount=price, currency=Currency.KRW)
-        updates["raw"] = {**existing.raw, "dry_run_replace": True}
-        return existing.model_copy(update=updates)
+        return await self._rvsecncl(existing, dvsn="01", new_qty=qty, new_price=price)
+
+    async def _rvsecncl(
+        self,
+        existing: Order,
+        *,
+        dvsn: str,
+        new_qty: Decimal | None,
+        new_price: Decimal | None,
+    ) -> Order:
+        creds = self._broker.credentials
+        krx_org = existing.raw.get("krx_fwdg_ord_orgno") or ""
+        eff_qty = new_qty if new_qty is not None else existing.qty
+        eff_price = new_price if new_price is not None else (
+            existing.price.amount if existing.price is not None else Decimal(0)
+        )
+        all_qty = "Y" if (dvsn == "02" and new_qty is None) else "N"
+        raw_req = OrderRvsecnclRequest(
+            CANO=creds.cano,
+            ACNT_PRDT_CD=creds.acnt_prdt_cd,
+            KRX_FWDG_ORD_ORGNO=krx_org,
+            ORGN_ODNO=existing.order_id,
+            ORD_DVSN=kis_ord_dvsn(existing.type),
+            RVSE_CNCL_DVSN_CD=dvsn,
+            ORD_QTY=str(eff_qty),
+            ORD_UNPR=str(eff_price),
+            QTY_ALL_ORD_YN=all_qty,
+        )
+        resp = await call(self._broker, OrderRvsecnclExecutor, raw_req)
+        out = getattr(resp, "output", []) or []
+        if not out or not getattr(out[0], "odno", None):
+            raise OrderRejected(
+                f"KIS order-rvsecncl returned no odno (dvsn={dvsn})",
+                broker="kis", endpoint=OrderRvsecnclExecutor.PATH,
+            )
+        new_id = out[0].odno
+        new_status = OrderStatus.CANCELLED if dvsn == "02" else OrderStatus.OPEN
+        return existing.model_copy(update={
+            "order_id": new_id,
+            "qty": eff_qty,
+            "price": existing.price if new_price is None else existing.price.model_copy(
+                update={"amount": new_price}
+            ) if existing.price else None,
+            "status": new_status,
+            "raw": {**existing.raw, "rvsecncl_dvsn": dvsn},
+        })
 
     async def get(self, order_id: str) -> Order:
         for o in await self.list_orders(status="all"):
@@ -239,3 +298,17 @@ class KisOrdersClient(OrdersClient):
             if guard > 50:
                 break
         return all_rows
+
+
+def _parse_ord_tmd(s: str | None) -> datetime | None:
+    """KIS ord_tmd is HHMMSS in KST; date defaults to today."""
+    from datetime import timedelta
+    if not s or len(s) < 6:
+        return None
+    try:
+        h, m, sec = int(s[:2]), int(s[2:4]), int(s[4:6])
+    except ValueError:
+        return None
+    today = date.today()
+    kst = datetime(today.year, today.month, today.day, h, m, sec)
+    return (kst - timedelta(hours=9)).replace(tzinfo=timezone.utc)
