@@ -1,0 +1,167 @@
+"""Wire-level regression tests for KIS adapter.
+
+These tests bypass the usual `monkeypatch(orders_mod, "call", ...)` shortcut and
+instead inject an `httpx.MockTransport` into the broker so the entire raw layer
+(`raw/base.py:execute → _parse_response → _raise_for_status_error`) plus the
+adapter mapping are exercised end-to-end. Each fixture under `tests/fixtures/`
+captures a specific KIS wire quirk we hit on live demo (single dict output,
+EGW00201 promotion, OFL_YN requirement).
+
+Token issuance is stubbed out by pre-attaching a fake `TokenManager` so we
+don't have to fixture-route the OAuth call too.
+"""
+
+from __future__ import annotations
+
+import json
+from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
+import pytest
+
+from tooja.brokers.kis.broker import KisBroker
+from tooja.core.enums import Currency, OrderSide
+from tooja.core.errors import RateLimitError
+from tooja.core.models import LimitOrder, Symbol
+from tooja.core.money import Money
+
+FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
+
+
+def _load(name: str) -> tuple[int, dict]:
+    data = json.loads((FIXTURES / name).read_text())
+    return data["_status"], data["_body"]
+
+
+async def _fake_get_token() -> str:
+    return "FAKE_TOKEN"
+
+
+def _inject(broker: KisBroker, handler) -> None:
+    """Attach a MockTransport-backed httpx client + fake token manager,
+    then mark the broker as open."""
+    transport = httpx.MockTransport(handler)
+    broker._http = httpx.AsyncClient(
+        base_url=broker.base_url, transport=transport,
+    )
+    broker._tokens = SimpleNamespace(
+        get_token=_fake_get_token,
+        invalidate=lambda: None,
+        get_approval_key=_fake_get_token,
+    )
+    broker._open = True
+
+
+def _broker(env="real") -> KisBroker:
+    return KisBroker(
+        app_key="K", app_secret="S", cano="12345678", hts_id="H", env=env,
+    )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Regression 1: order-cash `output` arriving as single dict (not list).
+# ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_order_cash_single_dict_output_is_normalized_to_list():
+    status, body = _load("order_cash_single_dict_ok.json")
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["payload"] = json.loads(request.content.decode())
+        return httpx.Response(status, json=body)
+
+    broker = _broker(env="demo")
+    _inject(broker, handler)
+    try:
+        req = LimitOrder(
+            symbol=Symbol(ticker="005930"),
+            side=OrderSide.BUY,
+            qty=Decimal("1"),
+            price=Money(amount=Decimal("70000"), currency=Currency.KRW),
+        )
+        order = await broker.orders.create(req)
+    finally:
+        await broker.close()
+
+    assert order.order_id == "TEST0001"
+    assert "order-cash" in captured["url"]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Regression 2: EGW00201 arriving as HTTP 500 must be retried, not bubbled as
+# NetworkError. We let the handler return 5 EGW00201 responses (exceeding the
+# default `max_retries=5`) so the loop exhausts and raises RateLimitError —
+# proving the promotion path is reached AND the retry classification works.
+# ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_egw00201_http500_promotes_and_exhausts_to_rate_limit_error():
+    status, body = _load("egw00201_http500_rate_limited.json")
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(status, json=body)
+
+    broker = _broker(env="real")
+    # Shrink backoff so the test doesn't sleep for seconds.
+    broker.rate_limit = broker.rate_limit.__class__(
+        per_sec=broker.rate_limit.per_sec,
+        max_retries=2,
+        base_backoff=0.0,
+    )
+    _inject(broker, handler)
+    try:
+        req = LimitOrder(
+            symbol=Symbol(ticker="005930"),
+            side=OrderSide.BUY,
+            qty=Decimal("1"),
+            price=Money(amount=Decimal("70000"), currency=Currency.KRW),
+        )
+        with pytest.raises(RateLimitError):
+            await broker.orders.create(req)
+    finally:
+        await broker.close()
+
+    # Original try + max_retries retries = 3 total attempts.
+    assert calls["n"] == 3
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Regression 3: account.get_balance request payload MUST include OFL_YN.
+# KIS rejects the request as 'INPUT_FIELD_NAME OFL_YN' when omitted, even
+# though the apiportal spec lists it as Optional.
+# ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_inquire_balance_request_includes_ofl_yn():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["query"] = dict(request.url.params)
+        return httpx.Response(200, json={
+            "rt_cd": "0",
+            "msg_cd": "MCA00000",
+            "msg1": "OK",
+            "ctx_area_fk100": "",
+            "ctx_area_nk100": "",
+            "output1": [],
+            "output2": [{
+                "dnca_tot_amt": "100000000",
+                "tot_evlu_amt": "100000000",
+            }],
+        })
+
+    broker = _broker(env="demo")
+    _inject(broker, handler)
+    try:
+        await broker.account.get_balance()
+    finally:
+        await broker.close()
+
+    assert "OFL_YN" in captured["query"], (
+        "Adapter must send OFL_YN even though spec lists it as Optional — "
+        "KIS server rejects with 'INPUT_FIELD_NAME OFL_YN' otherwise."
+    )

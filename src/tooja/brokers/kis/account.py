@@ -49,6 +49,7 @@ class KisAccountClient(AccountClient):
             CANO=creds.cano,
             ACNT_PRDT_CD=creds.acnt_prdt_cd,
             AFHR_FLPR_YN="N",
+            OFL_YN="",  # KIS rejects with INPUT_FIELD_NAME OFL_YN if omitted.
             INQR_DVSN="02",
             UNPR_DVSN="01",
             FUND_STTL_ICLD_YN="N",

@@ -1,0 +1,14 @@
+{
+  "_note": "KIS demo /trading/order-cash success response. KIS sends `output` as a bare dict (not list) when only one order is returned — this is the spec/wire mismatch that broke pydantic validation. All values below are FAKE.",
+  "_status": 200,
+  "_body": {
+    "rt_cd": "0",
+    "msg_cd": "APBK0013",
+    "msg1": "주문 전송 완료 되었습니다.",
+    "output": {
+      "KRX_FWDG_ORD_ORGNO": "06010",
+      "ODNO": "TEST0001",
+      "ORD_TMD": "120000"
+    }
+  }
+}
