@@ -7,6 +7,8 @@ def test_core_top_level_exports():
         "OrderSide", "OrderStatus", "RankingType", "TimeInForce",
         # money
         "Money", "CurrencyMismatchError",
+        # rate limit
+        "RateLimitConfig", "TokenBucket",
         # models
         "Symbol", "Quote", "OHLCV", "Orderbook", "OrderbookLevel", "Trade",
         "Position", "Balance", "Order", "Fill",

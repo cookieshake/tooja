@@ -11,7 +11,7 @@ from tooja.brokers.kis.rankings import KisRankingsClient
 from tooja.brokers.kis.raw_namespace import KisRawNamespace
 from tooja.brokers.kis.stream import KisStreamClient
 from tooja.core.broker import Broker
-from tooja.core.errors import BrokerError, UnsupportedOperation
+from tooja.core.errors import BrokerError
 
 
 def _kwargs(**override):
@@ -89,14 +89,6 @@ async def test_async_with_works():
     async with KisBroker(**_kwargs(env="real")) as client:
         assert client.is_open
     assert not client.is_open
-
-
-@pytest.mark.asyncio
-async def test_default_subclient_method_raises_unsupported():
-    """This plan ships interfaces only — KIS methods unimplemented -> UnsupportedOperation."""
-    async with KisBroker(**_kwargs(env="real")) as client:
-        with pytest.raises(UnsupportedOperation):
-            await client.market.get_quote("005930")
 
 
 def test_http_access_before_open_raises():

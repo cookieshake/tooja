@@ -39,6 +39,7 @@ from tooja.core.errors import (
     UnsupportedOperation,
 )
 from tooja.core.money import CurrencyMismatchError, Money
+from tooja.core.rate_limit import RateLimitConfig, TokenBucket
 from tooja.core.models import (
     OHLCV,
     Balance,
@@ -80,6 +81,8 @@ __all__ = [
     "OrderSide", "OrderStatus", "RankingType", "TimeInForce",
     # money
     "Money", "CurrencyMismatchError",
+    # rate limit
+    "RateLimitConfig", "TokenBucket",
     # models
     "Symbol", "Quote", "OHLCV", "Orderbook", "OrderbookLevel", "Trade",
     "Position", "Balance", "Order", "Fill",
