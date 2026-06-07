@@ -1,6 +1,14 @@
-"""Auto-generated from apiportal spec — do not edit by hand."""
+"""Auto-generated from apiportal spec — do not edit by hand.
+
+NOTE: KIS sends `output` as a bare dict when a single item is returned and as
+a list when multiple — the spec annotates it as list. A `field_validator`
+below normalizes the single-dict form into a one-element list. (Same quirk as
+order_cash.py.)
+"""
 
 from __future__ import annotations
+
+from pydantic import field_validator
 
 from tooja.brokers.kis.raw.base import (
     ApiExecutor, KisBaseModel, KisCommonResponse,
@@ -33,6 +41,11 @@ class OrderRvsecnclResponse(KisCommonResponse):
     """응답 본문."""
 
     output: list[OrderRvsecnclResponse_OutputItem] = []  # 응답상세 — single
+
+    @field_validator("output", mode="before")
+    @classmethod
+    def _wrap_single(cls, v):
+        return [v] if isinstance(v, dict) else v
 
 class OrderRvsecnclExecutor(ApiExecutor[OrderRvsecnclRequest, OrderRvsecnclResponse]):
     """주식주문(정정취소)[v1_국내주식-003]."""

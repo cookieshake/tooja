@@ -1,0 +1,14 @@
+{
+  "_note": "KIS /trading/order-rvsecncl (cancel/replace) success response. Same single-dict quirk as order-cash: `output` arrives as a bare dict for a single result. All values FAKE.",
+  "_status": 200,
+  "_body": {
+    "rt_cd": "0",
+    "msg_cd": "APBK0013",
+    "msg1": "주문 전송 완료 되었습니다.",
+    "output": {
+      "krx_fwdg_ord_orgno": "06010",
+      "odno": "TEST0002",
+      "ord_tmd": "120100"
+    }
+  }
+}

@@ -22,9 +22,10 @@ import httpx
 import pytest
 
 from tooja.brokers.kis.broker import KisBroker
-from tooja.core.enums import Currency, OrderSide
+from tooja.brokers.kis.orders import KisOrdersClient
+from tooja.core.enums import Currency, OrderSide, OrderStatus
 from tooja.core.errors import RateLimitError
-from tooja.core.models import LimitOrder, Symbol
+from tooja.core.models import LimitOrder, Order, Symbol
 from tooja.core.money import Money
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -89,6 +90,49 @@ async def test_order_cash_single_dict_output_is_normalized_to_list():
 
     assert order.order_id == "TEST0001"
     assert "order-cash" in captured["url"]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Regression 1b: order-rvsecncl (cancel/replace) has the SAME single-dict quirk
+# as order-cash. _rvsecncl is called directly with a pre-built Order so the wire
+# only sees the cancel call (get() would otherwise need its own fixture).
+# ────────────────────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_order_rvsecncl_single_dict_output_is_normalized_to_list():
+    from datetime import datetime, timezone
+
+    status, body = _load("order_rvsecncl_single_dict_ok.json")
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(status, json=body)
+
+    broker = _broker(env="demo")
+    _inject(broker, handler)
+    existing = Order(
+        order_id="TEST0001",
+        symbol=Symbol(ticker="005930"),
+        side=OrderSide.BUY,
+        qty=Decimal("1"),
+        type="limit",
+        price=Money(amount=Decimal("70000"), currency=Currency.KRW),
+        status=OrderStatus.OPEN,
+        submitted_at=datetime.now(timezone.utc),
+        raw={"krx_fwdg_ord_orgno": "06010"},
+    )
+    try:
+        client = KisOrdersClient(broker)
+        cancelled = await client._rvsecncl(
+            existing, dvsn="02", new_qty=None, new_price=None,
+        )
+    finally:
+        await broker.close()
+
+    assert cancelled.order_id == "TEST0002"
+    assert cancelled.status is OrderStatus.CANCELLED
+    assert "order-rvsecncl" in captured["url"]
 
 
 # ────────────────────────────────────────────────────────────────────────────
