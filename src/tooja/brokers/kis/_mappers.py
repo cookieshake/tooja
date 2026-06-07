@@ -346,12 +346,14 @@ def map_order_status(
     if code and code in _KIS_ORDER_STATUS:
         return _KIS_ORDER_STATUS[code]
     # KIS inquire-daily-ccld has no explicit status field — infer from the
-    # filled/remaining split. A row with nothing filled AND no remaining
-    # quantity is a cancelled (or rejected) order, not an open one. Without
-    # remaining_qty we can't tell those apart, so fall back to OPEN.
+    # filled/remaining split. When nothing remains but the order isn't fully
+    # filled, the unfilled balance was cancelled (covers both a wholly
+    # cancelled order, filled==0, and a partially-filled-then-cancelled one,
+    # 0<filled<qty). Without remaining_qty we can't distinguish cancelled from
+    # open, so fall back to the filled/qty inference.
+    if remaining_qty is not None and remaining_qty == 0 and filled_qty < qty:
+        return OrderStatus.CANCELLED
     if filled_qty == 0:
-        if remaining_qty is not None and remaining_qty == 0:
-            return OrderStatus.CANCELLED
         return OrderStatus.OPEN
     if filled_qty < qty:
         return OrderStatus.PARTIALLY_FILLED

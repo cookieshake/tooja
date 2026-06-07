@@ -141,8 +141,14 @@ def test_map_order_status_cancelled_from_remaining_qty():
     # filled=0 with no remaining => cancelled (verified live: inquire-daily-ccld
     # shows a cancelled order as rmn_qty=0, tot_ccld_qty=0).
     assert map_order_status(None, Decimal(1), Decimal(0), Decimal(0)) == OrderStatus.CANCELLED
+    # partially filled then cancelled: some filled, nothing remaining => cancelled.
+    assert map_order_status(None, Decimal(10), Decimal(3), Decimal(0)) == OrderStatus.CANCELLED
+    # fully filled with no remaining => filled, not cancelled.
+    assert map_order_status(None, Decimal(10), Decimal(10), Decimal(0)) == OrderStatus.FILLED
     # filled=0 with remaining still open.
     assert map_order_status(None, Decimal(1), Decimal(0), Decimal(1)) == OrderStatus.OPEN
+    # partially filled with remaining => still partially filled.
+    assert map_order_status(None, Decimal(10), Decimal(3), Decimal(7)) == OrderStatus.PARTIALLY_FILLED
     # remaining unknown (None) falls back to OPEN — can't distinguish.
     assert map_order_status(None, Decimal(1), Decimal(0), None) == OrderStatus.OPEN
 
