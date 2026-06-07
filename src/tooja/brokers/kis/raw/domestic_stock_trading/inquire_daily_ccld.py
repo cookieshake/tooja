@@ -89,4 +89,7 @@ class InquireDailyCcldExecutor(ApiExecutor[InquireDailyCcldRequest, InquireDaily
     PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
     METHOD = "GET"
     RESPONSE_TYPE = InquireDailyCcldResponse
-    TR_ID = "3"
+    # Spec lists tr_id as "(3개월이내) VTTC0081R (3개월이전) VTSC9215R"; the codegen
+    # mis-parsed it to "3". We query intraday only -> 3-month-inside variant.
+    TR_ID = "TTTC0081R"
+    TR_ID_VIRTUAL = "VTTC0081R"

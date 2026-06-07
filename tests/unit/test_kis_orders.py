@@ -183,7 +183,7 @@ async def test_cancel_sends_qty_zero_for_full_cancel(monkeypatch):
 
         if executor_cls is OrderRvsecnclExecutor:
             captured["request"] = request
-            return SimpleNamespace(output=[SimpleNamespace(odno="0000000002", krx_fwdg_ord_orgno="01577", ord_tmd=None)])
+            return SimpleNamespace(output=[SimpleNamespace(ODNO="0000000002", KRX_FWDG_ORD_ORGNO="01577", ORD_TMD=None)])
 
         # list_orders pagination loop — return the single existing order on
         # first call, empty thereafter.

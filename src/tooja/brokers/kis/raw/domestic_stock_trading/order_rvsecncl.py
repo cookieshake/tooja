@@ -31,11 +31,17 @@ class OrderRvsecnclRequest(KisBaseModel):
     EXCG_ID_DVSN_CD: str | None = None  # 거래소ID구분코드 — 한국거래소 : KRX 대체거래소 (넥스트레이드) : NXT SOR (Smart Order Routing) : SOR → 미입력시 KRX로 진행되며, 모의투자는 KRX만 가능
 
 class OrderRvsecnclResponse_OutputItem(KisBaseModel):
-    """nested item."""
+    """nested item.
 
-    krx_fwdg_ord_orgno: str | None = None  # 한국거래소전송주문조직번호
-    odno: str | None = None  # 주문번호
-    ord_tmd: str | None = None  # 주문시각
+    NOTE: KIS returns these output keys UPPER-CASE (KRX_FWDG_ORD_ORGNO / ODNO /
+    ORD_TMD), like order-cash. The codegen emitted them lower-case, so every
+    field parsed as None and the adapter mis-read a successful cancel as a
+    rejection. Field names corrected to match the wire.
+    """
+
+    KRX_FWDG_ORD_ORGNO: str | None = None  # 한국거래소전송주문조직번호
+    ODNO: str | None = None  # 주문번호
+    ORD_TMD: str | None = None  # 주문시각
 
 class OrderRvsecnclResponse(KisCommonResponse):
     """응답 본문."""
