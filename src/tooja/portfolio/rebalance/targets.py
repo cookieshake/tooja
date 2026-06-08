@@ -12,12 +12,14 @@ from tooja.portfolio.rebalance.models import TargetWeight
 logger = logging.getLogger(__name__)
 
 
-def flatten_targets(config: Any, parent_pct: Decimal = Decimal("1.0")) -> list[TargetWeight]:
+def flatten_targets(config: Any, parent_pct: Any = Decimal("1.0")) -> list[TargetWeight]:
     """Parse [weight, ticker] / [weight, [...]] nested config into flat TargetWeight list.
 
     ticker strings are parsed via Symbol.parse, so "005930" and "NASD:AAPL" both work.
     Weights are normalized within each sibling group, then scaled by parent_pct.
     """
+    if not isinstance(parent_pct, Decimal):
+        parent_pct = Decimal(str(parent_pct))
     if not isinstance(config, list):
         raise ValueError(f"config must be a list, got {type(config)}")
     if not config:

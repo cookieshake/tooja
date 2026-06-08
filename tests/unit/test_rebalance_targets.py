@@ -20,6 +20,14 @@ def test_flatten_targets_nested_and_exchange():
     assert by_sym[Symbol.parse("NASD:AAPL")] == Decimal("0.5")
 
 
+def test_flatten_targets_accepts_float_parent_pct():
+    # parent_pct as a float must not raise (lenient parser); weights scale correctly.
+    targets = flatten_targets([[1, "005930"], [1, "000660"]], 0.5)
+    by = {t.symbol: t.weight for t in targets}
+    assert by[Symbol.parse("005930")] == Decimal("0.25")
+    assert by[Symbol.parse("000660")] == Decimal("0.25")
+
+
 def test_validate_targets_warns_when_not_one(caplog):
     sym = Symbol.parse("005930")
     from tooja.portfolio.rebalance import TargetWeight
