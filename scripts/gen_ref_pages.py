@@ -37,12 +37,14 @@ for path in sorted(src.rglob("*.py")):
         full_doc_path = full_doc_path.with_name("index.md")
     elif parts[-1] == "__main__":
         continue
-    # Skip internal-only modules (_call, _mappers, _ws_stream, ...) from public docs.
-    # Dunder modules (__init__, etc.) are already handled above.
-    elif parts[-1].startswith("_"):
-        continue
 
     if not parts:
+        continue
+
+    # Skip internal-only modules AND packages: any path segment starting with a
+    # single underscore (e.g. _call.py, or a module inside _internal/). Dunder
+    # modules (__init__, __main__) are already handled above.
+    if any(part.startswith("_") for part in parts):
         continue
 
     nav[parts] = doc_path.as_posix()
