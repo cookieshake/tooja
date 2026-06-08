@@ -26,7 +26,8 @@ from tooja.core.models import (
     Position,
     Symbol,
 )
-from tooja.portfolio.rebalance.models import RebalancePlan, TargetWeight, _WEIGHT_TOLERANCE
+from tooja.core.money import Money
+from tooja.portfolio.rebalance.models import ExpectedHolding, RebalancePlan, TargetWeight, _WEIGHT_TOLERANCE
 
 
 @dataclass
@@ -81,7 +82,13 @@ class Rebalancer:
         orders, drift = await self._diff_targets(ctx)
         self._exit_off_targets(ctx, orders)
         orders.sort(key=lambda o: 0 if o.side is OrderSide.SELL else 1)
-        return RebalancePlan(orders=orders, expected_drift=drift)
+        holdings, cash = self._summarize(ctx, orders)
+        return RebalancePlan(
+            orders=orders,
+            expected_drift=drift,
+            expected_holdings=holdings,
+            expected_cash=cash,
+        )
 
     async def _load_account(self) -> _PlanContext:
         balance = await self.broker.account.get_balance()
@@ -136,6 +143,8 @@ class Rebalancer:
             price = ctx.current_price.get(t.symbol)
             if price is None or price <= 0:
                 price = await self._lookup_price(t.symbol, ctx.currency)
+                if price is not None and price > 0:
+                    ctx.current_price[t.symbol] = price
             if price is None or price <= 0:
                 drift += abs(actual_weight - t.weight)
                 continue
@@ -167,6 +176,34 @@ class Rebalancer:
                 continue
             side = OrderSide.SELL if pos.qty > 0 else OrderSide.BUY
             orders.append(MarketOrder(symbol=pos.symbol, side=side, qty=abs(pos.qty)))
+
+    def _summarize(
+        self, ctx: _PlanContext, orders: list[OrderRequest]
+    ) -> tuple[list[ExpectedHolding], Money]:
+        qty: dict[Symbol, Decimal] = {p.symbol: p.qty for p in ctx.positions}
+        price: dict[Symbol, Decimal] = dict(ctx.current_price)
+        invested = sum(ctx.current_value.values(), Decimal(0))
+        cash = ctx.total - invested
+
+        for o in orders:
+            px = price.get(o.symbol, Decimal(0))
+            cost = o.qty * px
+            if o.side is OrderSide.BUY:
+                qty[o.symbol] = qty.get(o.symbol, Decimal(0)) + o.qty
+                cash -= cost
+            else:
+                qty[o.symbol] = qty.get(o.symbol, Decimal(0)) - o.qty
+                cash += cost
+
+        holdings = [
+            ExpectedHolding(
+                symbol=s, qty=q, price=price.get(s, Decimal(0)),
+                value=q * price.get(s, Decimal(0)),
+            )
+            for s, q in qty.items()
+            if q != 0
+        ]
+        return holdings, Money(amount=cash, currency=ctx.currency)
 
     async def execute(self, plan: RebalancePlan) -> list[Order]:
         """Run the plan against the broker — calls broker.orders.create per order."""
