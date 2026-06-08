@@ -1,0 +1,38 @@
+name: release
+
+# Publish to PyPI when a GitHub Release is published.
+# Auth: PyPI Trusted Publishing (OIDC) — no API token/secret is stored.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/tooja
+    permissions:
+      id-token: write  # mint the short-lived OIDC token for Trusted Publishing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Guard against tagging a release that doesn't match the packaged version.
+      - name: Verify tag matches package version
+        run: |
+          pkg=$(grep -m1 '^version' pyproject.toml | sed -E 's/.*"(.*)".*/\1/')
+          tag="${GITHUB_REF_NAME#v}"
+          echo "release tag: $tag  ·  pyproject version: $pkg"
+          test "$tag" = "$pkg" || { echo "::error::tag '$tag' != pyproject version '$pkg'"; exit 1; }
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Publish to PyPI
+        run: uv publish  # OIDC is detected automatically in GitHub Actions
