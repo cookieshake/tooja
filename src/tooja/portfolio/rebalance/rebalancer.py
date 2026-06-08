@@ -19,7 +19,7 @@ from decimal import Decimal
 from typing import Iterable
 
 from tooja.core.broker import Broker
-from tooja.core.enums import Currency, OrderSide
+from tooja.core.enums import Currency, OrderSide, RebalanceDirection
 from tooja.core.models import (
     MarketOrder,
     Order,
@@ -55,6 +55,7 @@ class Rebalancer:
         drift_band: Decimal = Decimal("0"),
         step_rate: Decimal = Decimal("1.0"),
         rng: random.Random | None = None,
+        direction: RebalanceDirection = RebalanceDirection.BOTH,
     ):
         self.broker = broker
         self.targets = list(targets)
@@ -62,6 +63,7 @@ class Rebalancer:
         self.min_order_value = min_order_value
         self.drift_band = drift_band
         self.step_rate = max(Decimal("0"), min(step_rate, Decimal("1.0")))
+        self.direction = direction
         self._rng = rng if rng is not None else random.Random()
         self._validate_weights()
 
@@ -161,6 +163,12 @@ class Rebalancer:
                 continue
 
             adjusted_diff = diff_value * self.step_rate
+            if self.direction is RebalanceDirection.BUY_ONLY and adjusted_diff < 0:
+                drift += abs(actual_weight - t.weight)
+                continue
+            if self.direction is RebalanceDirection.SELL_ONLY and adjusted_diff > 0:
+                drift += abs(actual_weight - t.weight)
+                continue
             qty = self._size(adjusted_diff, price)
             if qty <= 0:
                 drift += abs(actual_weight - t.weight)
@@ -203,6 +211,10 @@ class Rebalancer:
             if pos.symbol in target_syms or pos.qty == 0:
                 continue
             side = OrderSide.SELL if pos.qty > 0 else OrderSide.BUY
+            if side is OrderSide.SELL and self.direction is RebalanceDirection.BUY_ONLY:
+                continue
+            if side is OrderSide.BUY and self.direction is RebalanceDirection.SELL_ONLY:
+                continue
             orders.append(MarketOrder(symbol=pos.symbol, side=side, qty=abs(pos.qty)))
 
     def _summarize(

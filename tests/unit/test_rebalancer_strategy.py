@@ -137,3 +137,109 @@ async def test_stochastic_rounding_is_seeded_and_unbiased():
     qtys = [int((await make_rb(s).compute_plan()).orders[0].qty) for s in range(400)]
     avg = sum(qtys) / len(qtys)
     assert 7.0 < avg < 7.3  # 기댓값 ≈ 7.142
+
+
+@pytest.mark.asyncio
+async def test_direction_buy_only_skips_sells():
+    sym = Symbol(ticker="005930")
+    sym2 = Symbol(ticker="000660")
+    # sym: 보유 100만(100%), target 40% → SELL 필요. BUY_ONLY → 주문 없음.
+    # sym2: 보유 없음, target 60% → BUY 필요. BUY_ONLY이므로 주문 발생해야 하지만
+    #   현금이 0이라 구매불가 → 총 주문 없음. 핵심은 SELL이 skip됨을 확인.
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("0"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=sym, qty=Decimal("100"),
+                avg_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+            ),
+        ],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[
+            TargetWeight(symbol=sym, weight=Decimal("0.4")),
+            TargetWeight(symbol=sym2, weight=Decimal("0.6")),
+        ],
+        cash_buffer_rate=Decimal("0"),
+        direction=RebalanceDirection.BUY_ONLY,
+    )
+    plan = await rb.compute_plan()
+    # sym: SELL이 BUY_ONLY로 skip. sym2: 가격 미조회 → skip.
+    assert plan.orders == []
+
+
+@pytest.mark.asyncio
+async def test_direction_buy_only_allows_buy_suppresses_sell():
+    from tooja.core.enums import OrderSide
+
+    over = Symbol(ticker="005930")   # target 0.4, overweight → would SELL → suppressed
+    under = Symbol(ticker="000660")  # target 0.6, underweight → would BUY → allowed
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        positions=[
+            Position(
+                symbol=over, qty=Decimal("700"),
+                avg_price=Money(amount=Decimal("1000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("1000"), currency=Currency.KRW),
+            ),
+        ],
+    )
+    quote = Quote(
+        symbol=under,
+        price=Money(amount=Decimal("1000"), currency=Currency.KRW),
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {under: quote}),
+        targets=[
+            TargetWeight(symbol=over, weight=Decimal("0.4")),
+            TargetWeight(symbol=under, weight=Decimal("0.6")),
+        ],
+        cash_buffer_rate=Decimal("0"),
+        direction=RebalanceDirection.BUY_ONLY,
+    )
+    plan = await rb.compute_plan()
+    # over (SELL) suppressed; under (BUY) allowed. Don't assert qty (Task 9 may make it partial).
+    assert all(o.side is OrderSide.BUY for o in plan.orders)
+    assert any(o.symbol == under and o.side is OrderSide.BUY for o in plan.orders)
+    assert not any(o.symbol == over for o in plan.orders)
+
+
+@pytest.mark.asyncio
+async def test_direction_sell_only_allows_sell_suppresses_buy():
+    from tooja.core.enums import OrderSide
+
+    over = Symbol(ticker="005930")   # target 0.4, overweight → SELL → allowed
+    under = Symbol(ticker="000660")  # target 0.6, underweight → BUY → suppressed
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        positions=[
+            Position(
+                symbol=over, qty=Decimal("700"),
+                avg_price=Money(amount=Decimal("1000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("1000"), currency=Currency.KRW),
+            ),
+        ],
+    )
+    quote = Quote(
+        symbol=under,
+        price=Money(amount=Decimal("1000"), currency=Currency.KRW),
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {under: quote}),
+        targets=[
+            TargetWeight(symbol=over, weight=Decimal("0.4")),
+            TargetWeight(symbol=under, weight=Decimal("0.6")),
+        ],
+        cash_buffer_rate=Decimal("0"),
+        direction=RebalanceDirection.SELL_ONLY,
+    )
+    plan = await rb.compute_plan()
+    # over (SELL) allowed; under (BUY) suppressed.
+    assert all(o.side is OrderSide.SELL for o in plan.orders)
+    assert any(o.symbol == over and o.side is OrderSide.SELL for o in plan.orders)
+    assert not any(o.symbol == under for o in plan.orders)
