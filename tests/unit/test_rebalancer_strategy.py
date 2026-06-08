@@ -45,6 +45,34 @@ async def test_plan_reports_expected_holdings_and_cash():
 
 
 @pytest.mark.asyncio
+async def test_step_rate_partial_close():
+    sym = Symbol(ticker="005930")
+    # 보유 0, 현금 100만, target 100%, price 50,000.
+    # step_rate 0.5 → 조정 gap 50만 → 50만/5만 = 10.0 (frac 0).
+    # frac이 0이라 floor/stochastic 무관하게 항상 10주 → Task 7 도입 후에도 안정.
+    # (step_rate 1.0이었다면 100만/5만 = 20주였을 것 → step_rate 효과 검증)
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("1000000"), currency=Currency.KRW)],
+        positions=[],
+    )
+    quote = Quote(
+        symbol=sym,
+        price=Money(amount=Decimal("50000"), currency=Currency.KRW),
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {sym: quote}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+        step_rate=Decimal("0.5"),
+    )
+    plan = await rb.compute_plan()
+    assert len(plan.orders) == 1
+    assert plan.orders[0].qty == Decimal("10")
+
+
+@pytest.mark.asyncio
 async def test_drift_band_skips_small_drift():
     sym = Symbol(ticker="005930")
     # 보유 992주 × 1,000원 = 992,000 / total 1,000,000

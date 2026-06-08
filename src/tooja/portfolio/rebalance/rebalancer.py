@@ -52,12 +52,14 @@ class Rebalancer:
         cash_buffer_rate: Decimal = Decimal("0.02"),
         min_order_value: Decimal = Decimal("10000"),
         drift_band: Decimal = Decimal("0"),
+        step_rate: Decimal = Decimal("1.0"),
     ):
         self.broker = broker
         self.targets = list(targets)
         self.cash_buffer_rate = cash_buffer_rate
         self.min_order_value = min_order_value
         self.drift_band = drift_band
+        self.step_rate = max(Decimal("0"), min(step_rate, Decimal("1.0")))
         self._validate_weights()
 
     def _validate_weights(self) -> None:
@@ -155,12 +157,13 @@ class Rebalancer:
                 drift += abs(actual_weight - t.weight)
                 continue
 
-            qty = self._size(diff_value, price)
+            adjusted_diff = diff_value * self.step_rate
+            qty = self._size(adjusted_diff, price)
             if qty <= 0:
                 drift += abs(actual_weight - t.weight)
                 continue
 
-            side = OrderSide.BUY if diff_value > 0 else OrderSide.SELL
+            side = OrderSide.BUY if adjusted_diff > 0 else OrderSide.SELL
             orders.append(MarketOrder(symbol=t.symbol, side=side, qty=qty))
 
             trade_val = qty * price
