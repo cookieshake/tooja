@@ -30,7 +30,7 @@ Adapters: **Korea Investment & Securities (KIS)** · **Toss Securities (Toss)**.
 uv add tooja      # or: pip install tooja
 ```
 
-Requires Python 3.13+. Before it lands on PyPI, install from source:
+Requires Python 3.13+. To work from source:
 
 ```bash
 git clone https://github.com/cookieshake/tooja && cd tooja && uv sync
