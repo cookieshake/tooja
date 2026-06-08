@@ -417,6 +417,84 @@ async def test_cash_sink_flips_off_target_sell_to_buy():
 
 
 @pytest.mark.asyncio
+async def test_stochastic_convergence_over_many_rounds():
+    """Repeatedly applying step_rate=0.5 + stochastic rounding converges to the integer-share optimum.
+
+    Scenario: single asset, price 70,000 KRW, starting cash 1,000,000, 0 shares held.
+    Target 100% weight, cash_buffer_rate=0, step_rate=0.5.
+    Integer-share optimum: floor(1,000,000 / 70,000) = 14 shares (14 * 70,000 = 980,000;
+    residual 20,000 < one share cost 70,000 → no further purchase possible).
+
+    After converging, compute_plan must return no orders (the remaining gap of 20,000
+    adjusted by step_rate 0.5 → 10,000 / 70,000 ≈ 0.14 shares → stochastic rounds to 0
+    or 1, but 1 share costs 70,000 > 20,000 available cash → _apply_cash_budget floors to 0
+    → empty order list).
+    """
+    import random as _random
+    from tooja.core.enums import OrderSide
+
+    sym = Symbol(ticker="005930")
+    price = Decimal("70000")
+    rng = _random.Random(12345)
+
+    # mutable simulated account
+    qty = Decimal("0")
+    cash = Decimal("1000000")
+
+    def make_broker(qty: Decimal, cash: Decimal):
+        positions = []
+        if qty != 0:
+            positions.append(
+                Position(
+                    symbol=sym,
+                    qty=qty,
+                    avg_price=Money(amount=price, currency=Currency.KRW),
+                    current_price=Money(amount=price, currency=Currency.KRW),
+                )
+            )
+        total = cash + qty * price
+        balance = Balance(
+            total_asset=Money(amount=total, currency=Currency.KRW),
+            cash=[Money(amount=cash, currency=Currency.KRW)],
+            positions=positions,
+        )
+        quote = Quote(
+            symbol=sym,
+            price=Money(amount=price, currency=Currency.KRW),
+            time=datetime.now(timezone.utc),
+        )
+        return _ScriptedBroker(balance, {sym: quote})
+
+    final_plan = None
+    for _ in range(60):
+        rb = Rebalancer(
+            broker=make_broker(qty, cash),
+            targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+            cash_buffer_rate=Decimal("0"),
+            step_rate=Decimal("0.5"),
+            rng=rng,
+        )
+        plan = await rb.compute_plan()
+        final_plan = plan
+        if not plan.orders:
+            break
+        for o in plan.orders:
+            if o.symbol == sym:
+                if o.side is OrderSide.BUY:
+                    qty += o.qty
+                    cash -= o.qty * price
+                else:
+                    qty -= o.qty
+                    cash += o.qty * price
+
+    # Converged to the integer-share optimum: 14 shares, remaining cash too small for another share.
+    assert qty == Decimal("14"), f"Expected 14 shares, got {qty}"
+    assert cash == Decimal("20000"), f"Expected 20000 residual cash, got {cash}"
+    # Rebalancer stops issuing orders once convergence is reached.
+    assert final_plan is not None and final_plan.orders == []
+
+
+@pytest.mark.asyncio
 async def test_cash_budget_partial_order_when_short_on_cash():
     a = Symbol(ticker="005930")  # 큰 괴리(우선)
     b = Symbol(ticker="035720")  # 작은 괴리
