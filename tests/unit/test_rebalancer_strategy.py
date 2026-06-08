@@ -279,6 +279,106 @@ async def test_cash_budget_prioritizes_larger_underweight():
 
 
 @pytest.mark.asyncio
+async def test_cash_sink_respects_buffer():
+    sink = Symbol(ticker="153130")
+    # total 1,000,000, buffer 2% = 20,000 유지. target = sink 100%.
+    # investable 980,000 → 98주(980,000) 매수. 잔여현금 20,000 = buffer.
+    # sink 단계는 buffer 초과 현금이 없으므로 추가 매수 없음 → 98주.
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("1000000"), currency=Currency.KRW)],
+        positions=[],
+    )
+    quote = Quote(
+        symbol=sink, price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {sink: quote}),
+        targets=[TargetWeight(symbol=sink, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0.02"),
+        cash_sink=sink,
+    )
+    plan = await rb.compute_plan()
+    total_qty = sum(o.qty for o in plan.orders if o.symbol == sink)
+    assert total_qty == Decimal("98")
+    assert plan.expected_cash.amount >= Decimal("20000")  # buffer 유지
+
+
+@pytest.mark.asyncio
+async def test_cash_sink_invests_surplus_above_buffer():
+    held = Symbol(ticker="005930")
+    sink = Symbol(ticker="153130")
+    # total=1,000,000, buffer 2%=20,000, investable=980,000
+    # held: 50주×10,000=500,000; target held=0.5, sink=0.5
+    # min_order_value=1,000,000 → 두 타깃 diff 모두 threshold 미달 → 일반 매수 없음
+    # starting_cash = 500,000; reserve = 20,000
+    # investable_cash = 480,000 → sink 48주 매수
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("500000"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=held, qty=Decimal("50"),
+                avg_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+            ),
+        ],
+    )
+    quote = Quote(
+        symbol=sink, price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {sink: quote}),
+        targets=[TargetWeight(symbol=held, weight=Decimal("0.5")),
+                 TargetWeight(symbol=sink, weight=Decimal("0.5"))],
+        cash_buffer_rate=Decimal("0.02"),
+        cash_sink=sink,
+        min_order_value=Decimal("1000000"),  # 일반 pass에서 모든 diff skip
+    )
+    plan = await rb.compute_plan()
+    sink_qty = sum(o.qty for o in plan.orders if o.symbol == sink)
+    assert sink_qty == Decimal("48")  # 480,000 / 10,000 = 48
+    assert plan.expected_cash.amount >= Decimal("20000")  # buffer 유지
+
+
+@pytest.mark.asyncio
+async def test_cash_sink_flips_off_target_sell_to_buy():
+    from tooja.core.enums import OrderSide
+
+    sink = Symbol(ticker="153130")   # off-target holding → exit SELL 80, then cash_sink reinvests
+    other = Symbol(ticker="005930")  # target 1.0 but unpriced → normal buy pass skips it
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("200000"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=sink, qty=Decimal("80"),
+                avg_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+            ),
+        ],
+    )
+    # other has no quote → unpriced → no normal buy.
+    # _exit_off_targets emits SELL 80 for sink (off-target).
+    # _apply_cash_sink: projected_cash = starting 200,000 + sink SELL 800,000 = 1,000,000.
+    #   reserve = 1,000,000 * 0.02 = 20,000 → investable = 980,000 → add_qty = 98.
+    #   existing SELL 80 → offset_qty = 80 (SELL removed) → flip BUY (98 - 80) = 18.
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=other, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0.02"),
+        cash_sink=sink,
+    )
+    plan = await rb.compute_plan()
+    sink_orders = [o for o in plan.orders if o.symbol == sink]
+    assert len(sink_orders) == 1
+    assert sink_orders[0].side is OrderSide.BUY  # the off-target SELL was flipped to a BUY
+    assert sink_orders[0].qty == Decimal("18")
+
+
+@pytest.mark.asyncio
 async def test_cash_budget_partial_order_when_short_on_cash():
     a = Symbol(ticker="005930")  # 큰 괴리(우선)
     b = Symbol(ticker="035720")  # 작은 괴리

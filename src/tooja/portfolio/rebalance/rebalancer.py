@@ -62,6 +62,7 @@ class Rebalancer:
         step_rate: Decimal = Decimal("1.0"),
         rng: random.Random | None = None,
         direction: RebalanceDirection = RebalanceDirection.BOTH,
+        cash_sink: Symbol | None = None,
     ):
         self.broker = broker
         self.targets = list(targets)
@@ -70,6 +71,7 @@ class Rebalancer:
         self.drift_band = drift_band
         self.step_rate = max(Decimal("0"), min(step_rate, Decimal("1.0")))
         self.direction = direction
+        self.cash_sink = cash_sink
         self._rng = rng if rng is not None else random.Random()
         self._validate_weights()
 
@@ -100,6 +102,7 @@ class Rebalancer:
         self._exit_off_targets(ctx, fixed_orders)  # off-target 청산을 예산 전에 합류
 
         orders = self._apply_cash_budget(ctx, fixed_orders, buy_candidates)
+        await self._apply_cash_sink(ctx, orders)
         orders.sort(key=lambda o: 0 if o.side is OrderSide.SELL else 1)
 
         holdings, cash, drift = self._summarize(ctx, orders)
@@ -245,6 +248,60 @@ class Rebalancer:
                     orders.append(MarketOrder(symbol=order.symbol, side=OrderSide.BUY, qty=affordable))
                     available -= affordable * px
         return orders
+
+    async def _apply_cash_sink(self, ctx: _PlanContext, orders: list[OrderRequest]) -> None:
+        """Invest surplus cash above buffer into the sink symbol."""
+        if self.cash_sink is None:
+            return
+
+        price = ctx.current_price.get(self.cash_sink)
+        if price is None or price <= 0:
+            price = await self._lookup_price(self.cash_sink, ctx.currency)
+        if price is None or price <= 0:
+            return  # 가격 모르면 투입 불가
+
+        # 가격을 캐시해 _summarize가 sink 홀딩을 올바르게 평가하도록 함
+        ctx.current_price[self.cash_sink] = price
+
+        # 주문 반영 후 예상 현금
+        projected_cash = ctx.starting_cash
+        sink_order: OrderRequest | None = None
+        for o in orders:
+            px = ctx.current_price.get(o.symbol, Decimal(0))
+            cost = o.qty * px
+            projected_cash += cost if o.side is OrderSide.SELL else -cost
+            if o.symbol == self.cash_sink:
+                sink_order = o
+
+        reserve = ctx.total * self.cash_buffer_rate  # buffer로 남길 현금
+        # step_rate scales the lump-sum surplus for gradual investment (single-symbol sink,
+        # so applied once as a scalar rather than per-order as in the main pass).
+        investable_cash = (projected_cash - reserve) * self.step_rate
+        if investable_cash <= 0:
+            return
+        add_qty = (investable_cash / price).quantize(Decimal("1"), rounding="ROUND_DOWN")
+        if add_qty <= 0:
+            return
+
+        if sink_order is None:
+            orders.append(MarketOrder(symbol=self.cash_sink, side=OrderSide.BUY, qty=add_qty))
+        elif sink_order.side is OrderSide.BUY:
+            idx = orders.index(sink_order)
+            orders[idx] = MarketOrder(symbol=self.cash_sink, side=OrderSide.BUY, qty=sink_order.qty + add_qty)
+        else:  # 기존 SELL을 축소/플립
+            # projected_cash already counted this SELL's proceeds, inflating add_qty by
+            # sink_order.qty. The reduce step below absorbs exactly that amount, so the
+            # net flipped BUY qty stays correct.
+            offset_qty = min(sink_order.qty, add_qty)
+            remaining = sink_order.qty - offset_qty
+            idx = orders.index(sink_order)
+            if remaining > 0:
+                orders[idx] = MarketOrder(symbol=self.cash_sink, side=OrderSide.SELL, qty=remaining)
+            else:
+                orders.pop(idx)
+                flip = add_qty - offset_qty
+                if flip > 0:
+                    orders.append(MarketOrder(symbol=self.cash_sink, side=OrderSide.BUY, qty=flip))
 
     def _summarize(
         self, ctx: _PlanContext, orders: list[OrderRequest]
