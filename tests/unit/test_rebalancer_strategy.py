@@ -344,6 +344,44 @@ async def test_cash_sink_invests_surplus_above_buffer():
 
 
 @pytest.mark.asyncio
+async def test_cash_sink_step_rate_throttles_surplus():
+    sink = Symbol(ticker="153130")
+    held = Symbol(ticker="005930")
+    # Same setup as test_cash_sink_invests_surplus_above_buffer but step_rate=0.5.
+    # held 50 * 10,000 = 500,000 is exactly its 50% target → no normal trade
+    # (and min_order_value large enough to suppress normal pass like the sibling test).
+    # surplus above buffer = 500,000 - 20,000 = 480,000; step_rate 0.5 → invest 240,000
+    # → sink 24 shares at 10,000.
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("500000"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=held, qty=Decimal("50"),
+                avg_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+            ),
+        ],
+    )
+    quote = Quote(
+        symbol=sink, price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {sink: quote}),
+        targets=[TargetWeight(symbol=held, weight=Decimal("0.5")),
+                 TargetWeight(symbol=sink, weight=Decimal("0.5"))],
+        cash_buffer_rate=Decimal("0.02"),
+        cash_sink=sink,
+        step_rate=Decimal("0.5"),
+        min_order_value=Decimal("1000000"),  # suppress the normal rebalance pass
+    )
+    plan = await rb.compute_plan()
+    sink_qty = sum(o.qty for o in plan.orders if o.symbol == sink)
+    assert sink_qty == Decimal("24")  # 240,000 / 10,000, half of the 480,000 surplus
+
+
+@pytest.mark.asyncio
 async def test_cash_sink_flips_off_target_sell_to_buy():
     from tooja.core.enums import OrderSide
 
