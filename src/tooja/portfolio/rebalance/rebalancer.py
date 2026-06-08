@@ -13,6 +13,7 @@ Constraints:
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Iterable
 
@@ -22,9 +23,21 @@ from tooja.core.models import (
     MarketOrder,
     Order,
     OrderRequest,
+    Position,
     Symbol,
 )
 from tooja.portfolio.rebalance.models import RebalancePlan, TargetWeight, _WEIGHT_TOLERANCE
+
+
+@dataclass
+class _PlanContext:
+    total: Decimal
+    currency: Currency
+    investable: Decimal
+    positions: list[Position]
+    current_value: dict[Symbol, Decimal] = field(default_factory=dict)
+    current_price: dict[Symbol, Decimal] = field(default_factory=dict)
+    unpriced: set[Symbol] = field(default_factory=set)
 
 
 class Rebalancer:
@@ -59,10 +72,18 @@ class Rebalancer:
 
         Held positions whose price cannot be resolved (broker omitted
         current_price and market.get_quote also fails) are flagged as
-        `unpriced`. Any target symbol whose corresponding position is
+        unpriced. Any target symbol whose corresponding position is
         unpriced is skipped — otherwise treating its actual value as 0
         would generate a runaway BUY for the entire target weight.
         """
+        ctx = await self._load_account()
+        await self._resolve_prices(ctx)
+        orders, drift = await self._diff_targets(ctx)
+        self._exit_off_targets(ctx, orders)
+        orders.sort(key=lambda o: 0 if o.side is OrderSide.SELL else 1)
+        return RebalancePlan(orders=orders, expected_drift=drift)
+
+    async def _load_account(self) -> _PlanContext:
         balance = await self.broker.account.get_balance()
         if balance.total_asset is None or balance.total_asset.amount <= 0:
             raise ValueError(
@@ -70,40 +91,41 @@ class Rebalancer:
             )
         total = balance.total_asset.amount
         currency = balance.total_asset.currency
-
         investable = (total * (Decimal("1.0") - self.cash_buffer_rate)).quantize(Decimal("1"))
+        return _PlanContext(
+            total=total, currency=currency, investable=investable,
+            positions=balance.positions,
+        )
 
-        current_value: dict[Symbol, Decimal] = {}
-        current_price: dict[Symbol, Decimal] = {}
-        unpriced: set[Symbol] = set()
-        for pos in balance.positions:
-            if pos.current_price is not None and pos.current_price.currency == currency:
+    async def _resolve_prices(self, ctx: _PlanContext) -> None:
+        for pos in ctx.positions:
+            if pos.current_price is not None and pos.current_price.currency == ctx.currency:
                 price = pos.current_price.amount
             else:
-                price = await self._lookup_price(pos.symbol, currency) or Decimal(0)
+                price = await self._lookup_price(pos.symbol, ctx.currency) or Decimal(0)
             if price > 0:
-                current_price[pos.symbol] = price
-                current_value[pos.symbol] = pos.qty * price
+                ctx.current_price[pos.symbol] = price
+                ctx.current_value[pos.symbol] = pos.qty * price
             elif pos.qty != 0:
                 # Catches shorts (qty<0) too — silently dropping them would
                 # leak into the BUY pass with actual=0.
-                unpriced.add(pos.symbol)
+                ctx.unpriced.add(pos.symbol)
 
+    async def _diff_targets(self, ctx: _PlanContext) -> tuple[list[OrderRequest], Decimal]:
         orders: list[OrderRequest] = []
         drift = Decimal(0)
-
         for t in self.targets:
-            if t.symbol in unpriced:
+            if t.symbol in ctx.unpriced:
                 # Cannot rebalance this target without a valid price for the
                 # existing holding — issuing a BUY based on actual=0 would be
                 # catastrophic. Pre-rebalance weight stays as drift.
-                actual_now = current_value.get(t.symbol, Decimal(0))
-                drift += abs((actual_now / total) - t.weight)
+                actual_now = ctx.current_value.get(t.symbol, Decimal(0))
+                drift += abs((actual_now / ctx.total) - t.weight)
                 continue
 
-            target_value = investable * t.weight
-            actual = current_value.get(t.symbol, Decimal(0))
-            actual_weight = actual / total
+            target_value = ctx.investable * t.weight
+            actual = ctx.current_value.get(t.symbol, Decimal(0))
+            actual_weight = actual / ctx.total
 
             diff_value = target_value - actual
             if abs(diff_value) < self.min_order_value:
@@ -111,16 +133,14 @@ class Rebalancer:
                 drift += abs(actual_weight - t.weight)
                 continue
 
-            price = current_price.get(t.symbol)
+            price = ctx.current_price.get(t.symbol)
             if price is None or price <= 0:
-                price = await self._lookup_price(t.symbol, currency)
+                price = await self._lookup_price(t.symbol, ctx.currency)
             if price is None or price <= 0:
                 drift += abs(actual_weight - t.weight)
                 continue
 
-            qty_raw = (diff_value / price)
-            qty = qty_raw.quantize(Decimal("1"), rounding="ROUND_DOWN") if qty_raw > 0 else \
-                (-qty_raw).quantize(Decimal("1"), rounding="ROUND_DOWN")
+            qty = self._size(diff_value, price)
             if qty <= 0:
                 drift += abs(actual_weight - t.weight)
                 continue
@@ -130,23 +150,23 @@ class Rebalancer:
 
             trade_val = qty * price
             actual_after = actual + trade_val if side is OrderSide.BUY else actual - trade_val
-            drift += abs((actual_after / total) - t.weight)
+            drift += abs((actual_after / ctx.total) - t.weight)
+        return orders, drift
 
+    def _size(self, diff_value: Decimal, price: Decimal) -> Decimal:
+        """Integer share count (floor of |diff_value| / price), sign-agnostic. step_rate / stochastic rounding are added in later tasks."""
+        qty_raw = abs(diff_value) / price
+        return qty_raw.quantize(Decimal("1"), rounding="ROUND_DOWN")
+
+    def _exit_off_targets(self, ctx: _PlanContext, orders: list[OrderRequest]) -> None:
         # Symbols currently held but not in targets -> fully exit. Long
         # positions SELL their qty; short positions BUY back abs(qty).
         target_syms = {t.symbol for t in self.targets}
-        for pos in balance.positions:
+        for pos in ctx.positions:
             if pos.symbol in target_syms or pos.qty == 0:
                 continue
             side = OrderSide.SELL if pos.qty > 0 else OrderSide.BUY
             orders.append(MarketOrder(symbol=pos.symbol, side=side, qty=abs(pos.qty)))
-
-        # Execute SELLs before BUYs so cash is freed up first — otherwise a
-        # large BUY at the head of the queue can be rejected for insufficient
-        # funds.
-        orders.sort(key=lambda o: 0 if o.side is OrderSide.SELL else 1)
-
-        return RebalancePlan(orders=orders, expected_drift=drift)
 
     async def execute(self, plan: RebalancePlan) -> list[Order]:
         """Run the plan against the broker — calls broker.orders.create per order."""
