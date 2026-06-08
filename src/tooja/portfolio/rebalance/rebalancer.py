@@ -364,8 +364,10 @@ class Rebalancer:
     async def _lookup_price(self, sym: Symbol, currency: Currency) -> Decimal | None:
         try:
             quote = await self.broker.market.get_quote(sym)
+            if quote is None or quote.price is None:
+                return None
+            if quote.price.currency != currency:
+                return None
+            return quote.price.amount
         except Exception:  # noqa: BLE001 — price unavailable -> skip this symbol
             return None
-        if quote.price.currency != currency:
-            return None
-        return quote.price.amount

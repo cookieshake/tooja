@@ -765,6 +765,30 @@ async def test_no_trade_band_suppresses_subshare_churn():
 
 
 @pytest.mark.asyncio
+async def test_lookup_price_handles_none_quote():
+    sym = Symbol(ticker="005930")
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("1000000"), currency=Currency.KRW)],
+        positions=[],
+    )
+
+    class _NoneMarket:
+        _broker_name = "stub"
+        async def get_quote(self, symbol):
+            return None
+
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    rb.broker.market = _NoneMarket()
+    plan = await rb.compute_plan()   # must NOT raise
+    assert plan.orders == []          # price unknown -> target skipped
+
+
+@pytest.mark.asyncio
 async def test_no_trade_band_allows_multishare_gap():
     """Gap clearly >= one share's price must still produce an order (band doesn't block real trades).
 
