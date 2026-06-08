@@ -1,0 +1,14 @@
+{
+  "_note": "KIS /trading/order-rvsecncl (cancel/replace) success response, captured from live demo. Two quirks: (1) `output` is a bare dict for a single result (same as order-cash); (2) output keys are UPPER-CASE (ODNO/KRX_FWDG_ORD_ORGNO/ORD_TMD) — the codegen had emitted lower-case, breaking parse. All values FAKE.",
+  "_status": 200,
+  "_body": {
+    "rt_cd": "0",
+    "msg_cd": "APBK0013",
+    "msg1": "모의투자 취소주문이 완료 되었습니다.",
+    "output": {
+      "KRX_FWDG_ORD_ORGNO": "00950",
+      "ODNO": "TEST0002",
+      "ORD_TMD": "120100"
+    }
+  }
+}

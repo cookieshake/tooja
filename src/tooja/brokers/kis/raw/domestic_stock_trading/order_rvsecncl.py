@@ -1,6 +1,14 @@
-"""Auto-generated from apiportal spec — do not edit by hand."""
+"""Auto-generated from apiportal spec — do not edit by hand.
+
+NOTE: KIS sends `output` as a bare dict when a single item is returned and as
+a list when multiple — the spec annotates it as list. A `field_validator`
+below normalizes the single-dict form into a one-element list. (Same quirk as
+order_cash.py.)
+"""
 
 from __future__ import annotations
+
+from pydantic import field_validator
 
 from tooja.brokers.kis.raw.base import (
     ApiExecutor, KisBaseModel, KisCommonResponse,
@@ -23,16 +31,27 @@ class OrderRvsecnclRequest(KisBaseModel):
     EXCG_ID_DVSN_CD: str | None = None  # 거래소ID구분코드 — 한국거래소 : KRX 대체거래소 (넥스트레이드) : NXT SOR (Smart Order Routing) : SOR → 미입력시 KRX로 진행되며, 모의투자는 KRX만 가능
 
 class OrderRvsecnclResponse_OutputItem(KisBaseModel):
-    """nested item."""
+    """nested item.
 
-    krx_fwdg_ord_orgno: str | None = None  # 한국거래소전송주문조직번호
-    odno: str | None = None  # 주문번호
-    ord_tmd: str | None = None  # 주문시각
+    NOTE: KIS returns these output keys UPPER-CASE (KRX_FWDG_ORD_ORGNO / ODNO /
+    ORD_TMD), like order-cash. The codegen emitted them lower-case, so every
+    field parsed as None and the adapter mis-read a successful cancel as a
+    rejection. Field names corrected to match the wire.
+    """
+
+    KRX_FWDG_ORD_ORGNO: str | None = None  # 한국거래소전송주문조직번호
+    ODNO: str | None = None  # 주문번호
+    ORD_TMD: str | None = None  # 주문시각
 
 class OrderRvsecnclResponse(KisCommonResponse):
     """응답 본문."""
 
     output: list[OrderRvsecnclResponse_OutputItem] = []  # 응답상세 — single
+
+    @field_validator("output", mode="before")
+    @classmethod
+    def _wrap_single(cls, v):
+        return [v] if isinstance(v, dict) else v
 
 class OrderRvsecnclExecutor(ApiExecutor[OrderRvsecnclRequest, OrderRvsecnclResponse]):
     """주식주문(정정취소)[v1_국내주식-003]."""

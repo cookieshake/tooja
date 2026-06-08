@@ -147,7 +147,16 @@ class KisOrdersClient(OrdersClient):
         new_price: Decimal | None,
     ) -> Order:
         creds = self._broker.credentials
-        krx_org = existing.raw.get("krx_fwdg_ord_orgno") or ""
+        # KRX_FWDG_ORD_ORGNO source differs by how `existing` was built:
+        #   - create() stores it under "krx_fwdg_ord_orgno"
+        #   - get()/list_orders() carry the raw inquire-daily-ccld row, which
+        #     names it "ord_gno_brno" (and exposes "ord_orgno" too)
+        krx_org = (
+            existing.raw.get("krx_fwdg_ord_orgno")
+            or existing.raw.get("ord_gno_brno")
+            or existing.raw.get("ord_orgno")
+            or ""
+        )
         # Full cancel: send qty=0 + QTY_ALL_ORD_YN=Y. Sending the original qty
         # can be rejected with "quantity exceeded" if the order was partially
         # filled before we cancel.
@@ -173,12 +182,12 @@ class KisOrdersClient(OrdersClient):
         )
         resp = await call(self._broker, OrderRvsecnclExecutor, raw_req)
         out = getattr(resp, "output", []) or []
-        if not out or not getattr(out[0], "odno", None):
+        if not out or not getattr(out[0], "ODNO", None):
             raise OrderRejected(
-                f"KIS order-rvsecncl returned no odno (dvsn={dvsn})",
+                f"KIS order-rvsecncl returned no ODNO (dvsn={dvsn})",
                 broker="kis", endpoint=OrderRvsecnclExecutor.PATH,
             )
-        new_id = out[0].odno
+        new_id = out[0].ODNO
         new_status = OrderStatus.CANCELLED if dvsn == "02" else OrderStatus.OPEN
         return existing.model_copy(update={
             "order_id": new_id,

@@ -1,0 +1,9 @@
+{
+  "_note": "KIS rejection when InquireBalanceRequest omits OFL_YN. KIS apiportal spec lists OFL_YN as Optional but the server requires the key (empty string OK). This fixture documents the rejection — the actual regression test verifies our adapter sends OFL_YN in the request payload, not by replaying this response.",
+  "_status": 200,
+  "_body": {
+    "rt_cd": "1",
+    "msg_cd": "40310000",
+    "msg1": "ERROR : INPUT_FIELD_NAME OFL_YN"
+  }
+}

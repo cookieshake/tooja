@@ -204,6 +204,16 @@ class ApiExecutor(Generic[TRequest, TResponse]):
         if isinstance(body, dict) and body.get("msg_cd") == "EGW00123":
             raise TokenExpiredError(f"Token expired: {body.get('msg1')}") from e
 
+        # KIS surfaces server-side rate-limit (EGW00201) as HTTP 500 with a
+        # JSON body. Promote it to KisApiError so the adapter-level retry loop
+        # can back off and retry instead of treating it as a network failure.
+        if isinstance(body, dict) and body.get("msg_cd") == "EGW00201":
+            raise KisApiError(
+                body.get("msg1", "rate limited"),
+                "EGW00201",
+                body.get("rt_cd", "1"),
+            ) from e
+
         logger.error("HTTP %s: %s", e.response.status_code, body)
 
 

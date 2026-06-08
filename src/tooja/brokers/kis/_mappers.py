@@ -337,9 +337,22 @@ _KIS_ORDER_STATUS: dict[str, OrderStatus] = {
 }
 
 
-def map_order_status(code: str | None, qty: Decimal, filled_qty: Decimal) -> OrderStatus:
+def map_order_status(
+    code: str | None,
+    qty: Decimal,
+    filled_qty: Decimal,
+    remaining_qty: Decimal | None = None,
+) -> OrderStatus:
     if code and code in _KIS_ORDER_STATUS:
         return _KIS_ORDER_STATUS[code]
+    # KIS inquire-daily-ccld has no explicit status field — infer from the
+    # filled/remaining split. When nothing remains but the order isn't fully
+    # filled, the unfilled balance was cancelled (covers both a wholly
+    # cancelled order, filled==0, and a partially-filled-then-cancelled one,
+    # 0<filled<qty). Without remaining_qty we can't distinguish cancelled from
+    # open, so fall back to the filled/qty inference.
+    if remaining_qty is not None and remaining_qty == 0 and filled_qty < qty:
+        return OrderStatus.CANCELLED
     if filled_qty == 0:
         return OrderStatus.OPEN
     if filled_qty < qty:
@@ -384,8 +397,8 @@ def order_from_daily_ccld_row(item: Any, raw_row: dict[str, Any]) -> "Order | No
     ord_dt = getattr(item, "ord_dt", None)
     ord_tmd = getattr(item, "ord_tmd", None)
     submitted = _parse_kst_datetime(ord_dt, ord_tmd) or _utc_now()
-    ccld_status = getattr(item, "rmn_qty", None)
-    status = map_order_status(None, qty, filled)
+    remaining = _dec(getattr(item, "rmn_qty", None))
+    status = map_order_status(None, qty, filled, remaining)
     return Order(
         order_id=odno,
         symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),

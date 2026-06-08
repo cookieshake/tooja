@@ -1,0 +1,10 @@
+{
+  "_note": "KIS server-side rate-limit response. Surfaced as HTTP 500 with EGW00201 in body — used to be silently mapped to NetworkError. Now must promote to KisApiError so the retry loop catches it.",
+  "_status": 500,
+  "_body": {
+    "rt_cd": "1",
+    "msg_cd": "EGW00201",
+    "msg1": "초당 거래건수를 초과하였습니다.",
+    "message": "EGW00201"
+  }
+}
