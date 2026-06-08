@@ -31,6 +31,14 @@ from tooja.core.money import Money
 from tooja.portfolio.rebalance.models import ExpectedHolding, RebalancePlan, TargetWeight, _WEIGHT_TOLERANCE
 
 
+def _require_decimal(name: str, value: Decimal) -> Decimal:
+    if not isinstance(value, Decimal):
+        raise TypeError(
+            f"{name} must be Decimal (got {type(value).__name__}); use Decimal('...') explicitly"
+        )
+    return value
+
+
 @dataclass
 class _PlanContext:
     total: Decimal
@@ -66,9 +74,10 @@ class Rebalancer:
     ):
         self.broker = broker
         self.targets = list(targets)
-        self.cash_buffer_rate = cash_buffer_rate
-        self.min_order_value = min_order_value
-        self.drift_band = drift_band
+        self.cash_buffer_rate = _require_decimal("cash_buffer_rate", cash_buffer_rate)
+        self.min_order_value = _require_decimal("min_order_value", min_order_value)
+        self.drift_band = _require_decimal("drift_band", drift_band)
+        _require_decimal("step_rate", step_rate)
         self.step_rate = max(Decimal("0"), min(step_rate, Decimal("1.0")))
         self.direction = direction
         self.cash_sink = cash_sink

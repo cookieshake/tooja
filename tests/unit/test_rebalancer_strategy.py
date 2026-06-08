@@ -616,6 +616,21 @@ async def test_stochastic_convergence_with_extreme_tiny_step_rate():
     assert rounds_to_converge is not None
 
 
+def test_rebalancer_rejects_float_params():
+    sym = Symbol(ticker="005930")
+    targets = [TargetWeight(symbol=sym, weight=Decimal("1.0"))]
+    broker = _ScriptedBroker(
+        # minimal balance not needed; constructor must fail before any broker call
+        Balance(
+            total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        ),
+        {},
+    )
+    for kw in ("cash_buffer_rate", "min_order_value", "drift_band", "step_rate"):
+        with pytest.raises(TypeError, match="must be Decimal"):
+            Rebalancer(broker=broker, targets=targets, **{kw: 0.5})
+
+
 @pytest.mark.asyncio
 async def test_cash_budget_partial_order_when_short_on_cash():
     a = Symbol(ticker="005930")  # 큰 괴리(우선)
