@@ -41,6 +41,12 @@ class _PlanContext:
     current_price: dict[Symbol, Decimal] = field(default_factory=dict)
     unpriced: set[Symbol] = field(default_factory=set)
 
+    @property
+    def starting_cash(self) -> Decimal:
+        """Cash before any planned orders: total assets minus invested value."""
+        invested = sum(self.current_value.values(), Decimal(0))
+        return self.total - invested
+
 
 class Rebalancer:
     """Depends only on the `Broker` ABC — works against any adapter."""
@@ -88,10 +94,15 @@ class Rebalancer:
         """
         ctx = await self._load_account()
         await self._resolve_prices(ctx)
-        orders, drift = await self._diff_targets(ctx)
-        self._exit_off_targets(ctx, orders)
+        sell_orders, buy_candidates = await self._diff_targets(ctx)
+
+        fixed_orders: list[OrderRequest] = list(sell_orders)
+        self._exit_off_targets(ctx, fixed_orders)  # off-target 청산을 예산 전에 합류
+
+        orders = self._apply_cash_budget(ctx, fixed_orders, buy_candidates)
         orders.sort(key=lambda o: 0 if o.side is OrderSide.SELL else 1)
-        holdings, cash = self._summarize(ctx, orders)
+
+        holdings, cash, drift = self._summarize(ctx, orders)
         return RebalancePlan(
             orders=orders,
             expected_drift=drift,
@@ -127,60 +138,50 @@ class Rebalancer:
                 # leak into the BUY pass with actual=0.
                 ctx.unpriced.add(pos.symbol)
 
-    async def _diff_targets(self, ctx: _PlanContext) -> tuple[list[OrderRequest], Decimal]:
-        orders: list[OrderRequest] = []
-        drift = Decimal(0)
+    async def _diff_targets(
+        self, ctx: _PlanContext
+    ) -> tuple[list[OrderRequest], list[tuple[OrderRequest, Decimal]]]:
+        sell_orders: list[OrderRequest] = []
+        buy_candidates: list[tuple[OrderRequest, Decimal]] = []  # (order, |diff_value| 우선순위)
         for t in self.targets:
             if t.symbol in ctx.unpriced:
-                # Cannot rebalance this target without a valid price for the
-                # existing holding — issuing a BUY based on actual=0 would be
-                # catastrophic. Pre-rebalance weight stays as drift.
-                actual_now = ctx.current_value.get(t.symbol, Decimal(0))
-                drift += abs((actual_now / ctx.total) - t.weight)
                 continue
 
             target_value = ctx.investable * t.weight
             actual = ctx.current_value.get(t.symbol, Decimal(0))
-            actual_weight = actual / ctx.total
-
             diff_value = target_value - actual
             if target_value > 0 and (abs(diff_value) / target_value) < self.drift_band:
-                drift += abs(actual_weight - t.weight)
                 continue
-
             if abs(diff_value) < self.min_order_value:
-                # No trade — residual drift = current drift.
-                drift += abs(actual_weight - t.weight)
                 continue
-
             price = ctx.current_price.get(t.symbol)
             if price is None or price <= 0:
                 price = await self._lookup_price(t.symbol, ctx.currency)
-                if price is not None and price > 0:
-                    ctx.current_price[t.symbol] = price
             if price is None or price <= 0:
-                drift += abs(actual_weight - t.weight)
                 continue
+            ctx.current_price[t.symbol] = price
 
             adjusted_diff = diff_value * self.step_rate
             if self.direction is RebalanceDirection.BUY_ONLY and adjusted_diff < 0:
-                drift += abs(actual_weight - t.weight)
                 continue
             if self.direction is RebalanceDirection.SELL_ONLY and adjusted_diff > 0:
-                drift += abs(actual_weight - t.weight)
                 continue
             qty = self._size(adjusted_diff, price)
             if qty <= 0:
-                drift += abs(actual_weight - t.weight)
                 continue
 
-            side = OrderSide.BUY if adjusted_diff > 0 else OrderSide.SELL
-            orders.append(MarketOrder(symbol=t.symbol, side=side, qty=qty))
-
-            trade_val = qty * price
-            actual_after = actual + trade_val if side is OrderSide.BUY else actual - trade_val
-            drift += abs((actual_after / ctx.total) - t.weight)
-        return orders, drift
+            if adjusted_diff > 0:
+                buy_candidates.append(
+                    (MarketOrder(symbol=t.symbol, side=OrderSide.BUY, qty=qty), abs(diff_value))
+                )
+            else:
+                held_qty = next((p.qty for p in ctx.positions if p.symbol == t.symbol), Decimal(0))
+                sell_qty = min(qty, held_qty)
+                if sell_qty > 0:
+                    sell_orders.append(
+                        MarketOrder(symbol=t.symbol, side=OrderSide.SELL, qty=sell_qty)
+                    )
+        return sell_orders, buy_candidates
 
     def _size(self, adjusted_diff: Decimal, price: Decimal) -> Decimal:
         """Compute integer share count from an already-scaled difference value.
@@ -217,13 +218,40 @@ class Rebalancer:
                 continue
             orders.append(MarketOrder(symbol=pos.symbol, side=side, qty=abs(pos.qty)))
 
+    def _apply_cash_budget(
+        self,
+        ctx: _PlanContext,
+        fixed_orders: list[OrderRequest],
+        buy_candidates: list[tuple[OrderRequest, Decimal]],
+    ) -> list[OrderRequest]:
+        orders: list[OrderRequest] = list(fixed_orders)
+        available = ctx.starting_cash
+        for o in fixed_orders:  # SELL은 현금↑, 숏청산 BUY는 현금↓
+            px = ctx.current_price.get(o.symbol, Decimal(0))
+            available += o.qty * px if o.side is OrderSide.SELL else -(o.qty * px)
+
+        buy_candidates.sort(key=lambda x: x[1], reverse=True)  # 괴리 큰 순
+        for order, _prio in buy_candidates:
+            px = ctx.current_price.get(order.symbol, Decimal(0))
+            if px <= 0:
+                continue
+            cost = order.qty * px
+            if cost <= available:
+                orders.append(order)
+                available -= cost
+            elif available >= px:
+                affordable = (available / px).quantize(Decimal("1"), rounding="ROUND_DOWN")
+                if affordable > 0 and affordable * px >= self.min_order_value:
+                    orders.append(MarketOrder(symbol=order.symbol, side=OrderSide.BUY, qty=affordable))
+                    available -= affordable * px
+        return orders
+
     def _summarize(
         self, ctx: _PlanContext, orders: list[OrderRequest]
-    ) -> tuple[list[ExpectedHolding], Money]:
+    ) -> tuple[list[ExpectedHolding], Money, Decimal]:
         qty: dict[Symbol, Decimal] = {p.symbol: p.qty for p in ctx.positions}
         price: dict[Symbol, Decimal] = dict(ctx.current_price)
-        invested = sum(ctx.current_value.values(), Decimal(0))
-        cash = ctx.total - invested
+        cash = ctx.starting_cash
 
         for o in orders:
             px = price.get(o.symbol, Decimal(0))
@@ -243,7 +271,14 @@ class Rebalancer:
             for s, q in qty.items()
             if q != 0
         ]
-        return holdings, Money(amount=cash, currency=ctx.currency)
+        target_map = {t.symbol: t.weight for t in self.targets}
+        weighted = {h.symbol: (h.value / ctx.total) for h in holdings}
+        syms = set(target_map) | set(weighted)
+        drift = sum(
+            (abs(weighted.get(s, Decimal(0)) - target_map.get(s, Decimal(0))) for s in syms),
+            Decimal(0),
+        )
+        return holdings, Money(amount=cash, currency=ctx.currency), drift
 
     async def execute(self, plan: RebalancePlan) -> list[Order]:
         """Run the plan against the broker — calls broker.orders.create per order."""

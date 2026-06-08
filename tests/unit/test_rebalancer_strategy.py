@@ -243,3 +243,68 @@ async def test_direction_sell_only_allows_sell_suppresses_buy():
     assert all(o.side is OrderSide.SELL for o in plan.orders)
     assert any(o.symbol == over and o.side is OrderSide.SELL for o in plan.orders)
     assert not any(o.symbol == under for o in plan.orders)
+
+
+@pytest.mark.asyncio
+async def test_cash_budget_prioritizes_larger_underweight():
+    big = Symbol(ticker="005930")    # target 0.7
+    small = Symbol(ticker="035720")  # target 0.3
+    balance = Balance(
+        total_asset=Money(amount=Decimal("800000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("800000"), currency=Currency.KRW)],
+        positions=[],
+    )
+    quotes = {
+        big: Quote(symbol=big, price=Money(amount=Decimal("100000"), currency=Currency.KRW),
+                   time=datetime.now(timezone.utc)),
+        small: Quote(symbol=small, price=Money(amount=Decimal("100000"), currency=Currency.KRW),
+                     time=datetime.now(timezone.utc)),
+    }
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, quotes),
+        targets=[
+            TargetWeight(symbol=big, weight=Decimal("0.7")),
+            TargetWeight(symbol=small, weight=Decimal("0.3")),
+        ],
+        cash_buffer_rate=Decimal("0"),
+    )
+    # investable 800,000: big target 560,000→5주(500,000), small 240,000→2주(200,000)
+    # 합 700,000 ≤ 800,000 → 둘 다 가능
+    plan = await rb.compute_plan()
+    bought = {o.symbol: o.qty for o in plan.orders}
+    assert bought[big] == Decimal("5")
+    assert bought[small] == Decimal("2")
+    total_buy = sum(o.qty * Decimal("100000") for o in plan.orders)
+    assert total_buy <= Decimal("800000")
+
+
+@pytest.mark.asyncio
+async def test_cash_budget_partial_order_when_short_on_cash():
+    a = Symbol(ticker="005930")  # 큰 괴리(우선)
+    b = Symbol(ticker="035720")  # 작은 괴리
+    balance = Balance(
+        total_asset=Money(amount=Decimal("300000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("300000"), currency=Currency.KRW)],
+        positions=[],
+    )
+    quotes = {
+        a: Quote(symbol=a, price=Money(amount=Decimal("100000"), currency=Currency.KRW),
+                 time=datetime.now(timezone.utc)),
+        b: Quote(symbol=b, price=Money(amount=Decimal("100000"), currency=Currency.KRW),
+                 time=datetime.now(timezone.utc)),
+    }
+    # target a 0.8(240,000→2주), b 0.2(60,000→0주: 60,000/100,000 floor 0 → skip)
+    # a 우선 2주(200,000), 예산 300,000 내
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, quotes),
+        targets=[
+            TargetWeight(symbol=a, weight=Decimal("0.8")),
+            TargetWeight(symbol=b, weight=Decimal("0.2")),
+        ],
+        cash_buffer_rate=Decimal("0"),
+    )
+    plan = await rb.compute_plan()
+    buys = {o.symbol: o.qty for o in plan.orders}
+    assert buys.get(a) == Decimal("2")
+    total_buy = sum(o.qty * Decimal("100000") for o in plan.orders)
+    assert total_buy <= Decimal("300000")
