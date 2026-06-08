@@ -4,6 +4,7 @@ from tooja.portfolio.rebalance import (
     ExpectedHolding,
     Rebalancer,
     RebalancePlan,
+    TargetSpec,
     TargetWeight,
     flatten_targets,
     validate_targets,
@@ -12,6 +13,7 @@ from tooja.portfolio.rebalance import (
 __all__ = [
     "Rebalancer",
     "RebalancePlan",
+    "TargetSpec",
     "TargetWeight",
     "ExpectedHolding",
     "flatten_targets",
