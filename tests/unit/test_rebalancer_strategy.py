@@ -827,3 +827,21 @@ async def test_no_trade_band_allows_multishare_gap():
     )
     plan = await rb.compute_plan()
     assert any(o.symbol == sym and o.qty > 0 for o in plan.orders)
+
+
+def test_rebalancer_rejects_out_of_range_params():
+    import pytest
+    sym = Symbol(ticker="005930")
+    targets = [TargetWeight(symbol=sym, weight=Decimal("1.0"))]
+    broker = _ScriptedBroker(
+        Balance(total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW)),
+        {},
+    )
+    with pytest.raises(ValueError, match="cash_buffer_rate"):
+        Rebalancer(broker=broker, targets=targets, cash_buffer_rate=Decimal("1.0"))
+    with pytest.raises(ValueError, match="cash_buffer_rate"):
+        Rebalancer(broker=broker, targets=targets, cash_buffer_rate=Decimal("-0.1"))
+    with pytest.raises(ValueError, match="min_order_value"):
+        Rebalancer(broker=broker, targets=targets, min_order_value=Decimal("-1"))
+    with pytest.raises(ValueError, match="drift_band"):
+        Rebalancer(broker=broker, targets=targets, drift_band=Decimal("-0.1"))

@@ -75,8 +75,14 @@ class Rebalancer:
         self.broker = broker
         self.targets = list(targets)
         self.cash_buffer_rate = _require_decimal("cash_buffer_rate", cash_buffer_rate)
+        if not (Decimal("0") <= self.cash_buffer_rate < Decimal("1.0")):
+            raise ValueError("cash_buffer_rate must be in [0, 1.0)")
         self.min_order_value = _require_decimal("min_order_value", min_order_value)
+        if self.min_order_value < Decimal("0"):
+            raise ValueError("min_order_value must be non-negative")
         self.drift_band = _require_decimal("drift_band", drift_band)
+        if self.drift_band < Decimal("0"):
+            raise ValueError("drift_band must be non-negative")
         _require_decimal("step_rate", step_rate)
         self.step_rate = max(Decimal("0"), min(step_rate, Decimal("1.0")))
         self.direction = direction
