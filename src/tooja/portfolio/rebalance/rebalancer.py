@@ -84,8 +84,9 @@ class Rebalancer:
         self.drift_band = _require_decimal("drift_band", drift_band)
         if self.drift_band < Decimal("0"):
             raise ValueError("drift_band must be non-negative")
-        _require_decimal("step_rate", step_rate)
-        self.step_rate = max(Decimal("0"), min(step_rate, Decimal("1.0")))
+        self.step_rate = max(
+            Decimal("0"), min(_require_decimal("step_rate", step_rate), Decimal("1.0"))
+        )
         self.direction = direction
         self.cash_sink = cash_sink
         self._rng = rng if rng is not None else random.Random()
