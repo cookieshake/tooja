@@ -3,22 +3,27 @@
 [![Python](https://img.shields.io/badge/python-3.13%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**A unified Python client for Korean securities brokers.** It pairs a broker-agnostic common abstraction (thick API) with a raw escape hatch that calls each broker's native API directly when you need it. The goal is to do for Korean brokers what ccxt did for crypto exchanges.
+**A unified Python client for Korean securities brokers.** One broker-agnostic API
+(`Quote` / `Order` / `Balance` / streams) across multiple brokers, plus a raw escape
+hatch to each broker's native API when you need it. The goal: do for Korean brokers
+what ccxt did for crypto exchanges.
 
-Currently supported adapters: **Korea Investment & Securities (KIS)**, **Toss Securities (Toss)**.
+Adapters: **Korea Investment & Securities (KIS)** · **Toss Securities (Toss)**.
 
-> ⚠️ **Status: 0.1.0 (early).** Quotes, account, orders, and streaming are fully verified end-to-end on the demo (paper) environment. Real (live) orders have been confirmed to reach the KIS servers along the full code path, but end-to-end verification through actual fills is not done yet. **When using the real environment, always verify yourself with small amounts first.**
+> ⚠️ **Status: 0.1.0 (early).** Verified end-to-end on the demo (paper) environment.
+> Live orders reach the KIS servers, but fill-level verification is still pending —
+> **start with small amounts on the real environment.**
 
 ---
 
 ## Features
 
-- **Common models + raw escape hatch** — work with normalized `Quote`/`Order`/`Balance`, and reach unsupported endpoints directly via `broker.raw.*`
-- **async-first** — all I/O is `async`/`await`, built on `asyncio`
-- **Real/demo switch** — flip with a single `env="real"` or `env="demo"` (ccxt/Alpaca convention)
-- **Strict money type** — `Money` is `Decimal`-only and blocks operations across mismatched currencies
-- **Automatic rate limiting** — token bucket + exponential backoff retry on the server-side `EGW00201`
-- **Token cache** — persisted to disk, multi-account safe (scoped by app_key hash)
+- **One API, many brokers** — normalized `Quote`/`Order`/`Balance`; switch adapters without touching strategy code
+- **Raw escape hatch** — reach any native endpoint directly via `broker.raw.*`
+- **async-first** — every call is `async`/`await`, built on `asyncio`
+- **Strict `Money`** — `Decimal`-only, rejects math across mismatched currencies
+- **Built-in rate limiting** — token bucket + exponential backoff on the server-side `EGW00201`
+- **Persistent token cache** — on disk, multi-account safe (scoped by app_key hash)
 - **WebSocket streams** — quotes/trades/orderbook/my-orders, with auto-reconnect + PINGPONG
 
 ---
@@ -26,125 +31,122 @@ Currently supported adapters: **Korea Investment & Securities (KIS)**, **Toss Se
 ## Installation
 
 ```bash
-# uv (recommended)
-uv add tooja
-
-# pip
-pip install tooja
+uv add tooja      # or: pip install tooja
 ```
 
-Requirements: Python 3.13+
+Requires Python 3.13+. Before it lands on PyPI, install from source:
 
-> Before it is published to PyPI, install from source:
-> ```bash
-> git clone https://github.com/cookieshake/tooja && cd tooja && uv sync
-> ```
+```bash
+git clone https://github.com/cookieshake/tooja && cd tooja && uv sync
+```
 
 ---
 
-## Quick Start
+## Quick start
+
+The constructor differs per broker; **everything after it is identical.**
 
 ```python
 import asyncio
 from tooja.brokers.kis import KisBroker
-
-
-async def main():
-    async with KisBroker(
-        app_key="...",
-        app_secret="...",
-        cano="50000000",       # first 8 digits of the account number
-        hts_id="your_hts_id",
-        env="demo",            # "real" or "demo"
-    ) as broker:
-        quote = await broker.market.get_quote("005930")  # Samsung Electronics
-        print(quote.price)     # Money(amount=Decimal('70000'), currency=KRW)
-
-
-asyncio.run(main())
-```
-
-A broker is an async context manager. Leaving the `async with` block tears down the HTTP session. For manual control, use `await broker.open()` / `await broker.close()`.
-
-Tokens and approval keys are issued **lazily** — they are issued automatically on the first authenticated call and cached to disk.
-
----
-
-## Toss Securities (Toss) Quick Start
-
-```python
-import asyncio
 from tooja.brokers.toss import TossBroker
 
 
 async def main():
-    async with TossBroker(
-        client_id="...",
-        client_secret="...",
-        account_seq=12345678,   # optional — only needed for account/order calls
-    ) as broker:
-        quote = await broker.market.get_quote("005930")  # Samsung Electronics
-        print(quote.price)     # Money(amount=Decimal('...'), currency=KRW)
+    # Korea Investment & Securities
+    broker = KisBroker(
+        app_key="...", app_secret="...",
+        cano="50000000",          # first 8 digits of the account number
+        hts_id="your_hts_id",
+        env="demo",               # "real" or "demo"
+    )
+
+    # ...or Toss Securities — same API from here on
+    # broker = TossBroker(client_id="...", client_secret="...", account_seq=12345678)
+
+    async with broker:
+        quote = await broker.market.get_quote("005930")   # Samsung Electronics
+        print(quote.price)        # Money(amount=Decimal('70000'), currency=KRW)
 
 
 asyncio.run(main())
 ```
 
-### Authentication
-
-| Argument | Description |
-|---|---|
-| `client_id`, `client_secret` | Toss Open API OAuth2 client credentials |
-| `account_seq` | Account sequence number (int). Only required for account/order APIs; not needed for quotes or info lookups |
-| `token_cache` | `"disk"` (default, persists across restarts) / `"memory"` (in-process) |
-| `rate_limit` | Provide a `RateLimitConfig` directly (optional) |
-
-Authentication: **OAuth2 client_credentials**. The access token is issued automatically on the first call and cached.
-
-You can reach every Toss endpoint (exchange rates, fees, market calendar, etc.) directly via `broker.raw.<category>` (categories: `account`, `asset`, `auth`, `market_data`, `market_info`, `order`, `order_history`, `order_info`, `stock_info`).
-
-### Support matrix
-
-| Domain | Supported methods | Notes |
-|---|---|---|
-| **market** | `get_quote` · `get_quotes` · `get_orderbook` · `get_ohlcv` · `get_price_limits` | candle interval: only `"1m"` · `"1d"` supported (others → `UnsupportedOperation`) |
-| **account** | `get_balance` · `get_positions` · `get_position` · `get_buying_power` · `get_sellable_quantity` | requires `account_seq` |
-| **orders** | `create` · `get` · `cancel` · `replace` · `list_orders` · `iter_orders` | stop orders → `UnsupportedOperation`; `list_fills` → `UnsupportedOperation` |
-| **info** | `get_stock` · `get_warnings` · `is_holiday` | `list_halts` · `search` · `get_financials` · `get_dividends` → `UnsupportedOperation` |
-| **analytics** | — | all `UnsupportedOperation` |
-| **rankings** | — | all `UnsupportedOperation` |
-| **stream** | — | all `UnsupportedOperation` |
+A broker is an async context manager; leaving the `async with` block closes the HTTP
+session (use `await broker.open()` / `await broker.close()` for manual control).
+Tokens are issued **lazily** — on the first authenticated call — and cached to disk.
 
 ---
 
-## KIS authentication / environment
+## Brokers
 
-| Argument | Description |
-|---|---|
-| `app_key`, `app_secret` | KIS app key/secret |
-| `cano` | first 8 digits of the account number |
-| `hts_id` | HTS user ID (required for the WS my-order stream) |
-| `acnt_prdt_cd` | account product code, defaults to `"01"` |
-| `env` | `"real"` (live, openapi:9443, 20 RPS) / `"demo"` (paper, openapivts:29443, 2 RPS) |
-| `rate_limit` | Provide a `RateLimitConfig` directly (optional) |
+Both adapters speak the same API; they differ in how much of it they implement.
 
-`env` is the entire safety boundary. There is no dry-run mode — with `env="real"`, orders are actually sent.
+| Domain        | KIS                                                  | Toss                                                       |
+|---------------|------------------------------------------------------|------------------------------------------------------------|
+| **market**    | full — quote, orderbook, OHLCV, price limits         | quote, orderbook, price limits; OHLCV `1m`/`1d` only       |
+| **account**   | full                                                 | full                                                       |
+| **orders**    | full, incl. fills (`list_fills`/`iter_fills`)        | no stop orders, no fills                                   |
+| **info**      | full — incl. dividends, financials, halts            | `get_stock`, `get_warnings`, `is_holiday` only             |
+| **analytics** | ✅ investor flows, program trading, short selling, …  | —                                                          |
+| **rankings**  | ✅                                                    | —                                                          |
+| **stream**    | ✅ quotes, trades, orderbook, my-orders               | —                                                          |
 
----
+Anything not covered above raises `UnsupportedOperation` — and is still reachable via
+the [raw escape hatch](#raw-escape-hatch).
 
-## Usage patterns
-
-### Quotes (market)
+### KIS
 
 ```python
-await broker.market.get_quote("005930")                       # -> Quote
-await broker.market.get_quotes(["005930", "000660"])          # -> list[Quote] (concurrent)
-await broker.market.get_orderbook("005930", depth=10)         # -> Orderbook
-await broker.market.get_ohlcv("005930", interval="1d", limit=30)  # -> list[OHLCV]
-# interval: "1m" "5m" "15m" "30m" "1h" "1d" "1w" "1M"
+KisBroker(app_key="...", app_secret="...", cano="50000000", hts_id="...", env="demo")
 ```
 
-### Account (account)
+| Argument             | Description                                                              |
+|----------------------|-------------------------------------------------------------------------|
+| `app_key`,`app_secret` | KIS app key/secret                                                    |
+| `cano`               | first 8 digits of the account number                                    |
+| `hts_id`             | HTS user ID (required for the WS my-order stream)                        |
+| `acnt_prdt_cd`       | account product code, defaults to `"01"`                                |
+| `env`                | `"real"` (live, 20 RPS) / `"demo"` (paper, 2 RPS)                        |
+| `rate_limit`         | a `RateLimitConfig`, optional                                           |
+
+`env` is the entire safety boundary — there is no dry-run mode, so with `env="real"`
+orders are actually sent. Note that KIS **demo does not provide some TRs** (e.g.
+`inquire-daily-ccld`, `search-stock-info`).
+
+### Toss
+
+```python
+TossBroker(client_id="...", client_secret="...", account_seq=12345678)
+```
+
+| Argument                | Description                                                           |
+|-------------------------|----------------------------------------------------------------------|
+| `client_id`,`client_secret` | Toss Open API OAuth2 client credentials                          |
+| `account_seq`           | account sequence number (int); required only for account/order calls |
+| `token_cache`           | `"disk"` (default) / `"memory"`                                      |
+| `rate_limit`            | a `RateLimitConfig`, optional                                        |
+
+Authentication is **OAuth2 client_credentials**; the access token is issued on the
+first call and cached.
+
+---
+
+## Usage
+
+These calls are the same on any adapter — the examples use `broker` from the quick start.
+
+### Market
+
+```python
+await broker.market.get_quote("005930")                          # -> Quote
+await broker.market.get_quotes(["005930", "000660"])             # -> list[Quote] (concurrent)
+await broker.market.get_orderbook("005930", depth=10)            # -> Orderbook
+await broker.market.get_ohlcv("005930", interval="1d", limit=30) # -> list[OHLCV]
+# KIS intervals: "1m" "5m" "15m" "30m" "1h" "1d" "1w" "1M"  ·  Toss: "1m" "1d"
+```
+
+### Account
 
 ```python
 balance = await broker.account.get_balance()      # -> Balance (total_asset, cash, positions)
@@ -152,7 +154,7 @@ positions = await broker.account.get_positions()  # -> list[Position]
 pos = await broker.account.get_position("005930") # -> Position | None
 ```
 
-### Orders (orders)
+### Orders
 
 ```python
 from decimal import Decimal
@@ -166,58 +168,51 @@ order = await broker.orders.create(LimitOrder(
     price=Money(amount=Decimal(70000), currency=Currency.KRW),
 ))
 
-await broker.orders.get(order.order_id)                       # -> Order (current state)
-await broker.orders.replace(order.order_id, price=Decimal(69000))  # amend
-await broker.orders.cancel(order.order_id)                    # cancel
+await broker.orders.get(order.order_id)                            # -> Order (current state)
+await broker.orders.replace(order.order_id, price=Decimal(69000)) # amend
+await broker.orders.cancel(order.order_id)                        # cancel
 
 # market sell
 await broker.orders.create(MarketOrder(
     symbol=Symbol.parse("000660"), side=OrderSide.SELL, qty=Decimal(5),
 ))
 
-# query orders/fills
+# query
 await broker.orders.list_orders(status="open")   # "all" | "open" | "closed"
-await broker.orders.list_fills()                 # -> list[Fill]
-async for o in broker.orders.iter_orders():
-    ...
+await broker.orders.list_fills()                 # KIS only -> list[Fill]
 ```
 
-### Info / analytics / rankings (info / analytics / rankings)
+### Info / analytics / rankings
 
 ```python
 from datetime import date
 from tooja.core import RankingType
 
-await broker.info.get_stock("005930")               # -> StockInfo
+await broker.info.get_stock("005930")            # -> StockInfo
+await broker.info.is_holiday(date(2026, 1, 1))   # -> bool
+
+# KIS only:
 await broker.info.get_dividends("005930")
-await broker.info.is_holiday(date(2026, 1, 1))      # -> bool
-await broker.info.list_halts()                      # halted symbols
-
-await broker.analytics.investor_flows("005930")     # trading flows by investor type
-await broker.analytics.program_trading("005930")
-await broker.analytics.short_selling("005930")
-
+await broker.info.list_halts()                   # halted symbols
+await broker.analytics.investor_flows("005930")  # trading flows by investor type
 await broker.rankings.get(RankingType.VOLUME, limit=30)  # -> list[RankingEntry]
-# RankingType: VOLUME, TURNOVER, MARKET_CAP, PRICE_CHANGE_UP, ...
 ```
 
-### Real-time streams (stream, WebSocket)
+### Streams (WebSocket, KIS only)
 
 ```python
 async with broker.stream.quotes(["005930", "000660"]) as stream:
     async for quote in stream:
         print(quote.symbol, quote.price)
 
-# trades / orderbook follow the same pattern
-# my-order fill notifications (per account)
-async with broker.stream.orders() as stream:
-    async for update in stream:
-        print(update.order_id, update.status)
+# trades / orderbook follow the same pattern; orders() streams my-order fills
 ```
 
-Streams are entered with `async with` and consumed with `async for`. They auto-reconnect by default, and you can adjust subscriptions at runtime with `await stream.subscribe(sym)` / `await stream.unsubscribe(sym)`.
+Streams are entered with `async with` and consumed with `async for`. They auto-reconnect
+by default; adjust subscriptions at runtime with `await stream.subscribe(sym)` /
+`await stream.unsubscribe(sym)`.
 
-### Rebalancing (portfolio)
+### Rebalancing
 
 ```python
 from decimal import Decimal
@@ -234,8 +229,8 @@ rb = Rebalancer(
     min_order_value=Decimal("10000"),   # skip orders below 10,000 KRW
 )
 
-plan = await rb.compute_plan()          # -> RebalancePlan (orders, expected_drift)
-orders = await rb.execute(plan)         # execute the orders as planned
+plan = await rb.compute_plan()   # -> RebalancePlan (orders, expected_drift)
+await rb.execute(plan)           # execute the orders as planned
 ```
 
 `Rebalancer` depends only on the `Broker` ABC, so it works with any adapter.
@@ -244,18 +239,24 @@ orders = await rb.execute(plan)         # execute the orders as planned
 
 ## Raw escape hatch
 
-For endpoints the common models don't cover, you can reach the KIS native API directly. `broker.raw.<category>.<Executor>` gives you the auto-generated raw executor classes (338 endpoints).
+For endpoints the common API doesn't cover, call each broker's native API directly via
+`broker.raw`. Categories are lazily imported on first access.
 
 ```python
-# access a raw executor class (categories are lazily imported on first access)
+# KIS — auto-generated executor classes (338 endpoints)
 ExecCls = broker.raw.domestic_stock_quotations.InquirePriceExecutor
+
+# Toss — categories: account, asset, auth, market_data, market_info,
+#        order, order_history, order_info, stock_info
+client = broker.raw.market_data
 ```
 
-> Note: the raw layer currently exposes **executor class access**, and execution is low-level. Normalized call helpers will be refined in a future release. For most tasks, the thick API above is enough.
+> The raw layer currently exposes executor/category access; normalized call helpers are
+> future work. For most tasks the common API above is enough.
 
 ---
 
-## Rate limit & errors
+## Rate limits & errors
 
 ```python
 from tooja.core import RateLimitConfig
@@ -263,11 +264,15 @@ from tooja.core import RateLimitConfig
 broker = KisBroker(..., rate_limit=RateLimitConfig(per_sec=10, max_retries=5, base_backoff=0.1))
 ```
 
-Defaults are 20 RPS on real / 2 RPS on demo. The server-side `EGW00201` (transactions-per-second exceeded) is retried automatically with exponential backoff.
+Defaults: 20 RPS on KIS real, 2 RPS on KIS demo. The server-side `EGW00201`
+(transactions-per-second exceeded) is retried automatically with exponential backoff.
 
 All exceptions inherit from `BrokerError`:
 
-`AuthError` · `PermissionDenied` · `RateLimitError` · `UnsupportedOperation` · `MarketClosed` · `SymbolNotFound` · `OrderRejected` · `InsufficientFunds` · `OrderNotFound` · `NetworkError` · `TimeoutError` · `SubscriptionLimitExceeded` · `ConfigError` · `BrokerAPIError`
+`AuthError` · `PermissionDenied` · `RateLimitError` · `UnsupportedOperation` ·
+`MarketClosed` · `SymbolNotFound` · `OrderRejected` · `InsufficientFunds` ·
+`OrderNotFound` · `NetworkError` · `TimeoutError` · `SubscriptionLimitExceeded` ·
+`ConfigError` · `BrokerAPIError`
 
 ```python
 from tooja.core import OrderRejected
@@ -275,25 +280,8 @@ from tooja.core import OrderRejected
 try:
     await broker.orders.create(...)
 except OrderRejected as e:
-    print(e.raw_code, e.raw_message)   # preserves the original KIS code/message
+    print(e.raw_code, e.raw_message)   # preserves the original broker code/message
 ```
-
----
-
-## Limitations & roadmap
-
-**Current limitations**
-- KIS and Toss adapters provided; Kiwoom / DB and others not supported
-- KIS real-order end-to-end verification incomplete (the code path is verified)
-- KIS demo (paper) does not provide some TRs — e.g. `inquire-daily-ccld`, `search-stock-info`
-- Toss: stream/analytics/rankings not supported
-- Toss: OHLCV interval supports only `"1m"` · `"1d"` (no 5m, 15m, etc.)
-- The raw escape hatch goes only as far as class access (execution helpers are future work)
-
-**Roadmap**
-- Real-order end-to-end verification
-- Normalized raw call helpers
-- Additional broker adapters
 
 ---
 
