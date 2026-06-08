@@ -557,6 +557,66 @@ async def test_stochastic_convergence_with_tiny_step_rate():
 
 
 @pytest.mark.asyncio
+async def test_stochastic_convergence_with_extreme_tiny_step_rate():
+    """step_rate=0.01: each round's adjusted gap is ~1% of the remaining gap, far
+    below one share for most of the trajectory. Plain floor would never converge;
+    stochastic rounding still reaches the 14-share integer optimum, just over many
+    more rounds than step_rate 0.1 (~26) or 0.5 (~6)."""
+    import random as _random
+    from tooja.core.enums import OrderSide
+
+    sym = Symbol(ticker="005930")
+    price = Decimal("70000")
+    rng = _random.Random(7)
+
+    qty = Decimal("0")
+    cash = Decimal("1000000")
+
+    def make_broker(qty: Decimal, cash: Decimal):
+        positions = []
+        if qty != 0:
+            positions.append(Position(
+                symbol=sym, qty=qty,
+                avg_price=Money(amount=price, currency=Currency.KRW),
+                current_price=Money(amount=price, currency=Currency.KRW),
+            ))
+        total = cash + qty * price
+        balance = Balance(
+            total_asset=Money(amount=total, currency=Currency.KRW),
+            cash=[Money(amount=cash, currency=Currency.KRW)],
+            positions=positions,
+        )
+        quote = Quote(symbol=sym, price=Money(amount=price, currency=Currency.KRW),
+                      time=datetime.now(timezone.utc))
+        return _ScriptedBroker(balance, {sym: quote})
+
+    rounds_to_converge = None
+    for r in range(30000):
+        rb = Rebalancer(
+            broker=make_broker(qty, cash),
+            targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+            cash_buffer_rate=Decimal("0"),
+            step_rate=Decimal("0.01"),
+            rng=rng,
+        )
+        plan = await rb.compute_plan()
+        for o in plan.orders:
+            if o.symbol == sym:
+                if o.side is OrderSide.BUY:
+                    qty += o.qty
+                    cash -= o.qty * price
+                else:
+                    qty -= o.qty
+                    cash += o.qty * price
+        if qty == Decimal("14"):
+            rounds_to_converge = r
+            break
+
+    assert qty == Decimal("14"), f"did not converge; stuck at {qty} shares after 30000 rounds"
+    assert rounds_to_converge is not None
+
+
+@pytest.mark.asyncio
 async def test_cash_budget_partial_order_when_short_on_cash():
     a = Symbol(ticker="005930")  # 큰 괴리(우선)
     b = Symbol(ticker="035720")  # 작은 괴리
