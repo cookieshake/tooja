@@ -1,5 +1,6 @@
 # tooja
 
+[![PyPI](https://img.shields.io/pypi/v/tooja)](https://pypi.org/project/tooja/)
 [![Python](https://img.shields.io/badge/python-3.13%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -278,6 +279,19 @@ try:
 except OrderRejected as e:
     print(e.raw_code, e.raw_message)   # preserves the original broker code/message
 ```
+
+---
+
+## Disclaimer
+
+`tooja` is an **unofficial, independent** project. It is **not affiliated with,
+endorsed by, or supported by** Korea Investment & Securities, Toss Securities, or
+any other broker. All product names, logos, and trademarks belong to their
+respective owners.
+
+The software is provided "as is", without warranty of any kind. You are solely
+responsible for any trading activity conducted through this library, including any
+financial loss. Use it at your own risk.
 
 ---
 
