@@ -21,6 +21,31 @@ with mkdocs_gen_files.open("index.md", "w") as fd:
     fd.write(readme)
 mkdocs_gen_files.set_edit_path("index.md", "README.md")
 
+# --- API reference overview (landing page of the reference section) ------
+OVERVIEW = """# API Reference
+
+`tooja` pairs a broker-agnostic abstraction with per-broker adapters.
+
+## Entry points
+
+- [`Broker`][tooja.core.broker.Broker] — the ABC every adapter implements
+- [`KisBroker`][tooja.brokers.kis.broker.KisBroker] — Korea Investment & Securities adapter
+- [`TossBroker`][tooja.brokers.toss.broker.TossBroker] — Toss Securities adapter
+
+## Layout
+
+- **`tooja.core`** — shared models, the `Money` type, errors, rate limiting, base clients
+- **`tooja.brokers.kis`** / **`tooja.brokers.toss`** — adapters, each with `market` /
+  `account` / `orders` / `info` / `stream` domains plus a `raw` escape hatch
+- **`tooja.portfolio`** — portfolio tooling (rebalancing)
+
+Browse the full module tree in the sidebar. For task-oriented usage and quick starts,
+see the [home page](../).
+"""
+
+with mkdocs_gen_files.open("reference/index.md", "w") as fd:
+    fd.write(OVERVIEW)
+
 # --- API reference: walk src/tooja ---------------------------------------
 nav = mkdocs_gen_files.Nav()
 
@@ -56,4 +81,6 @@ for path in sorted(src.rglob("*.py")):
     mkdocs_gen_files.set_edit_path(full_doc_path, path.relative_to(root))
 
 with mkdocs_gen_files.open("reference/SUMMARY.md", "w") as nav_file:
+    # Overview first, then the auto-generated module tree.
+    nav_file.write("- [Overview](index.md)\n")
     nav_file.writelines(nav.build_literate_nav())
