@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0  # full history for edit_uri / revision dates
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v8.2.0  # no floating v8 tag; pin the exact version
         with:
           enable-cache: true
       - name: Build site (+ llms.txt / llms-full.txt)
