@@ -691,17 +691,28 @@ def classify(result: dict[str, Any]) -> str:
 
 # ---------- pytest fixtures + collection ----------
 
+def _read_json(path: Path) -> Any | None:
+    """Read JSON at import/collection time without ever crashing collection —
+    a missing OR corrupt/empty spec file just yields no endpoints."""
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 def _collect_endpoints() -> list[tuple[str, dict[str, Any]]]:
-    if not CATS_FILE.exists():
+    cats = _read_json(CATS_FILE)
+    if not cats:
         return []
-    cats = json.loads(CATS_FILE.read_text())
     out: list[tuple[str, dict[str, Any]]] = []
     for cat in cats:
         slug = cat["slug"]
-        path = SPEC_DIR / f"{slug}.json"
-        if not path.exists():
+        eps = _read_json(SPEC_DIR / f"{slug}.json")
+        if not eps:
             continue
-        for ep in json.loads(path.read_text()):
+        for ep in eps:
             out.append((slug, ep))
     return out
 
