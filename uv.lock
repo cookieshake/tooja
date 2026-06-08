@@ -487,19 +487,6 @@ wheels = [
 ]
 
 [[package]]
-name = "mkdocs-section-index"
-version = "0.3.12"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "mkdocs" },
-    { name = "properdocs" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f1/e2/64d0f3f054ca8efe61e706006ff5f0d49ad99620c62c2e04818573391c33/mkdocs_section_index-0.3.12.tar.gz", hash = "sha256:285635bf86c643b0fc7a343053d7a818049817bff4408f52b80c4367bd5e7268", size = 14946, upload-time = "2026-04-16T19:20:00.953Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b0/4d/a330cab5e055d45e924cec69da54a3d8ed37643964f8d1fa1a772b496273/mkdocs_section_index-0.3.12-py3-none-any.whl", hash = "sha256:a1100039546beb4ebef63ce6fc91f3195fb9c0c3763105d4d3d7cd31e0a046eb", size = 8932, upload-time = "2026-04-16T19:19:59.741Z" },
-]
-
-[[package]]
 name = "mkdocstrings"
 version = "1.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -863,7 +850,6 @@ docs = [
     { name = "mkdocs-literate-nav" },
     { name = "mkdocs-llmstxt" },
     { name = "mkdocs-material" },
-    { name = "mkdocs-section-index" },
     { name = "mkdocstrings", extra = ["python"] },
     { name = "ruff" },
 ]
@@ -886,7 +872,6 @@ docs = [
     { name = "mkdocs-literate-nav", specifier = ">=0.6" },
     { name = "mkdocs-llmstxt", specifier = ">=0.2" },
     { name = "mkdocs-material", specifier = ">=9.5" },
-    { name = "mkdocs-section-index", specifier = ">=0.3" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=0.27" },
     { name = "ruff", specifier = ">=0.8" },
 ]

@@ -13,7 +13,6 @@ theme:
     repo: fontawesome/brands/github
   features:
     - navigation.sections
-    - navigation.indexes
     - navigation.top
     - navigation.tracking
     - toc.follow
@@ -42,7 +41,6 @@ plugins:
         - scripts/gen_ref_pages.py
   - literate-nav:
       nav_file: SUMMARY.md
-  - section-index
   - mkdocstrings:
       handlers:
         python:

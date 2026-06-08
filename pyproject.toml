@@ -46,7 +46,6 @@ docs = [
     "mkdocstrings[python]>=0.27",
     "mkdocs-gen-files>=0.5",
     "mkdocs-literate-nav>=0.6",
-    "mkdocs-section-index>=0.3",
     "mkdocs-llmstxt>=0.2",
     "ruff>=0.8",  # mkdocstrings 시그니처 포매팅
 ]
