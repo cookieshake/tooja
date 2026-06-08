@@ -16,8 +16,6 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Iterable
 
-from pydantic import BaseModel
-
 from tooja.core.broker import Broker
 from tooja.core.enums import Currency, OrderSide
 from tooja.core.models import (
@@ -26,19 +24,7 @@ from tooja.core.models import (
     OrderRequest,
     Symbol,
 )
-
-
-_WEIGHT_TOLERANCE = Decimal("0.001")
-
-
-class TargetWeight(BaseModel):
-    symbol: Symbol
-    weight: Decimal
-
-
-class RebalancePlan(BaseModel):
-    orders: list[OrderRequest]
-    expected_drift: Decimal
+from tooja.portfolio.rebalance.models import RebalancePlan, TargetWeight, _WEIGHT_TOLERANCE
 
 
 class Rebalancer:
