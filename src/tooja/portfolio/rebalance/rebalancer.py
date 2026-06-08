@@ -46,15 +46,13 @@ class _PlanContext:
     currency: Currency
     investable: Decimal
     positions: list[Position]
+    # Cash before any planned orders, taken straight from the broker's reported
+    # balance. We do NOT derive it as ``total - invested`` because unpriced
+    # positions are missing from ``invested`` and would inflate the figure.
+    starting_cash: Decimal = Decimal(0)
     current_value: dict[Symbol, Decimal] = field(default_factory=dict)
     current_price: dict[Symbol, Decimal] = field(default_factory=dict)
     unpriced: set[Symbol] = field(default_factory=set)
-
-    @property
-    def starting_cash(self) -> Decimal:
-        """Cash before any planned orders: total assets minus invested value."""
-        invested = sum(self.current_value.values(), Decimal(0))
-        return self.total - invested
 
 
 class Rebalancer:
@@ -84,9 +82,9 @@ class Rebalancer:
         self.drift_band = _require_decimal("drift_band", drift_band)
         if self.drift_band < Decimal("0"):
             raise ValueError("drift_band must be non-negative")
-        self.step_rate = max(
-            Decimal("0"), min(_require_decimal("step_rate", step_rate), Decimal("1.0"))
-        )
+        self.step_rate = _require_decimal("step_rate", step_rate)
+        if not (Decimal("0") <= self.step_rate <= Decimal("1.0")):
+            raise ValueError("step_rate must be in [0, 1.0]")
         self.direction = direction
         self.cash_sink = cash_sink
         self._rng = rng if rng is not None else random.Random()
@@ -141,15 +139,20 @@ class Rebalancer:
         total = balance.total_asset.amount
         currency = balance.total_asset.currency
         investable = (total * (Decimal("1.0") - self.cash_buffer_rate)).quantize(Decimal("1"))
+        starting_cash = next(
+            (m.amount for m in balance.cash if m.currency == currency), Decimal(0)
+        )
         return _PlanContext(
             total=total, currency=currency, investable=investable,
-            positions=balance.positions,
+            positions=balance.positions, starting_cash=starting_cash,
         )
 
     async def _resolve_prices(self, ctx: _PlanContext) -> None:
         # Position prices: prefer position.current_price (matching currency), else needs a quote.
         need_quote: set[Symbol] = set()
         for pos in ctx.positions:
+            if pos.qty == 0:
+                continue  # worth 0, never exited — no quote needed
             if pos.current_price is not None and pos.current_price.currency == ctx.currency:
                 ctx.current_price[pos.symbol] = pos.current_price.amount
             else:
@@ -242,7 +245,7 @@ class Rebalancer:
         if self.step_rate >= Decimal("1.0"):
             return floor
         frac = units - floor
-        if Decimal(str(self._rng.random())) < frac:
+        if self._rng.random() < float(frac):
             return floor + Decimal("1")
         return floor
 
@@ -269,7 +272,12 @@ class Rebalancer:
         orders: list[OrderRequest] = list(fixed_orders)
         available = ctx.starting_cash
         for o in fixed_orders:  # SELL은 현금↑, 숏청산 BUY는 현금↓
-            px = ctx.current_price.get(o.symbol, Decimal(0))
+            px = ctx.current_price.get(o.symbol)
+            if px is None or px <= 0:
+                # Unpriced order (e.g. exiting an unpriced position): fall back to
+                # avg_price so a short cover BUY still debits cash and can't overdraw.
+                pos = next((p for p in ctx.positions if p.symbol == o.symbol), None)
+                px = pos.avg_price.amount if pos else Decimal(0)
             available += o.qty * px if o.side is OrderSide.SELL else -(o.qty * px)
 
         buy_candidates.sort(key=lambda x: x[1], reverse=True)  # 괴리 큰 순

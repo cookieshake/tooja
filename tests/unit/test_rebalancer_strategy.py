@@ -179,6 +179,7 @@ async def test_direction_buy_only_allows_buy_suppresses_sell():
     under = Symbol(ticker="000660")  # target 0.6, underweight → would BUY → allowed
     balance = Balance(
         total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("300000"), currency=Currency.KRW)],  # 1,000,000 - 700,000 held
         positions=[
             Position(
                 symbol=over, qty=Decimal("700"),
@@ -216,6 +217,7 @@ async def test_direction_sell_only_allows_sell_suppresses_buy():
     under = Symbol(ticker="000660")  # target 0.6, underweight → BUY → suppressed
     balance = Balance(
         total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("300000"), currency=Currency.KRW)],  # 1,000,000 - 700,000 held
         positions=[
             Position(
                 symbol=over, qty=Decimal("700"),
@@ -845,3 +847,92 @@ def test_rebalancer_rejects_out_of_range_params():
         Rebalancer(broker=broker, targets=targets, min_order_value=Decimal("-1"))
     with pytest.raises(ValueError, match="drift_band"):
         Rebalancer(broker=broker, targets=targets, drift_band=Decimal("-0.1"))
+    with pytest.raises(ValueError, match="step_rate"):
+        Rebalancer(broker=broker, targets=targets, step_rate=Decimal("1.5"))
+    with pytest.raises(ValueError, match="step_rate"):
+        Rebalancer(broker=broker, targets=targets, step_rate=Decimal("-0.1"))
+
+
+@pytest.mark.asyncio
+async def test_unpriced_position_does_not_inflate_starting_cash():
+    # Regression: starting_cash must come from broker-reported cash, not
+    # ``total - invested`` — an unpriced holding is absent from ``invested``
+    # and would otherwise inflate the cash figure (here by B's 300,000).
+    held = Symbol(ticker="005930")   # priced, 50 * 10,000 = 500,000
+    dark = Symbol(ticker="000660")   # unpriced (no current_price, no quote)
+    sink = Symbol(ticker="153130")   # cash sink, priced
+    # total 1,000,000 = cash 200,000 + held 500,000 + dark 300,000
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("200000"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=held, qty=Decimal("50"),
+                avg_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+            ),
+            Position(
+                symbol=dark, qty=Decimal("30"),
+                avg_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+                current_price=None,  # broker gives no price and get_quote will fail
+            ),
+        ],
+    )
+    quote = Quote(
+        symbol=sink, price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {sink: quote}),  # no quote for `dark`
+        targets=[TargetWeight(symbol=held, weight=Decimal("0.5")),
+                 TargetWeight(symbol=dark, weight=Decimal("0.5"))],
+        cash_buffer_rate=Decimal("0.02"),  # reserve = 20,000
+        cash_sink=sink,
+        min_order_value=Decimal("1000000"),  # suppress normal pass
+    )
+    plan = await rb.compute_plan()
+    sink_qty = sum(o.qty for o in plan.orders if o.symbol == sink)
+    # cash 200,000 - reserve 20,000 = 180,000 -> 18 shares.
+    # Old (total - invested) would see 500,000 cash -> 48 shares.
+    assert sink_qty == Decimal("18")
+
+
+@pytest.mark.asyncio
+async def test_unpriced_short_cover_reserves_cash_via_avg_price():
+    from tooja.core.enums import OrderSide
+
+    long_t = Symbol(ticker="005930")  # target, underweight -> BUY candidate
+    short = Symbol(ticker="000660")   # off-target short, unpriced -> cover BUY
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("500000"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=long_t, qty=Decimal("50"),
+                avg_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+            ),
+            Position(  # unpriced short: cover BUY 10 must debit cash via avg_price
+                symbol=short, qty=Decimal("-10"),
+                avg_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+                current_price=None,
+            ),
+        ],
+    )
+    quote = Quote(
+        symbol=long_t, price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),  # long_t priced from position; no quote needed
+        targets=[TargetWeight(symbol=long_t, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    plan = await rb.compute_plan()
+    # cover BUY 10 @ avg 10,000 = 100,000 reserved -> 400,000 left -> long_t buys 40.
+    # Without the avg_price fallback the cover costs 0 -> long_t would buy 50.
+    assert any(o.symbol == short and o.side is OrderSide.BUY and o.qty == Decimal("10")
+               for o in plan.orders)
+    long_buy = sum(o.qty for o in plan.orders
+                   if o.symbol == long_t and o.side is OrderSide.BUY)
+    assert long_buy == Decimal("40")
