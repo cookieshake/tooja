@@ -263,6 +263,18 @@ class Rebalancer:
                 continue
             orders.append(MarketOrder(symbol=pos.symbol, side=side, qty=abs(pos.qty)))
 
+    def _get_effective_price(self, symbol: Symbol, ctx: _PlanContext) -> Decimal:
+        """Resolved market price, or the position's avg_price when unpriced.
+
+        Falling back to avg_price keeps cash math honest for unpriced orders
+        (e.g. covering an unpriced short) instead of treating them as free.
+        """
+        px = ctx.current_price.get(symbol)
+        if px is not None and px > 0:
+            return px
+        pos = next((p for p in ctx.positions if p.symbol == symbol), None)
+        return pos.avg_price.amount if pos else Decimal(0)
+
     def _apply_cash_budget(
         self,
         ctx: _PlanContext,
@@ -272,12 +284,7 @@ class Rebalancer:
         orders: list[OrderRequest] = list(fixed_orders)
         available = ctx.starting_cash
         for o in fixed_orders:  # SELL은 현금↑, 숏청산 BUY는 현금↓
-            px = ctx.current_price.get(o.symbol)
-            if px is None or px <= 0:
-                # Unpriced order (e.g. exiting an unpriced position): fall back to
-                # avg_price so a short cover BUY still debits cash and can't overdraw.
-                pos = next((p for p in ctx.positions if p.symbol == o.symbol), None)
-                px = pos.avg_price.amount if pos else Decimal(0)
+            px = self._get_effective_price(o.symbol, ctx)
             available += o.qty * px if o.side is OrderSide.SELL else -(o.qty * px)
 
         buy_candidates.sort(key=lambda x: x[1], reverse=True)  # 괴리 큰 순
@@ -309,7 +316,7 @@ class Rebalancer:
         projected_cash = ctx.starting_cash
         sink_order: OrderRequest | None = None
         for o in orders:
-            px = ctx.current_price.get(o.symbol, Decimal(0))
+            px = self._get_effective_price(o.symbol, ctx)
             cost = o.qty * px
             projected_cash += cost if o.side is OrderSide.SELL else -cost
             if o.symbol == self.cash_sink:
@@ -351,11 +358,10 @@ class Rebalancer:
         self, ctx: _PlanContext, orders: list[OrderRequest]
     ) -> tuple[list[ExpectedHolding], Money, Decimal]:
         qty: dict[Symbol, Decimal] = {p.symbol: p.qty for p in ctx.positions}
-        price: dict[Symbol, Decimal] = dict(ctx.current_price)
         cash = ctx.starting_cash
 
         for o in orders:
-            px = price.get(o.symbol, Decimal(0))
+            px = self._get_effective_price(o.symbol, ctx)
             cost = o.qty * px
             if o.side is OrderSide.BUY:
                 qty[o.symbol] = qty.get(o.symbol, Decimal(0)) + o.qty
@@ -364,14 +370,12 @@ class Rebalancer:
                 qty[o.symbol] = qty.get(o.symbol, Decimal(0)) - o.qty
                 cash += cost
 
-        holdings = [
-            ExpectedHolding(
-                symbol=s, qty=q, price=price.get(s, Decimal(0)),
-                value=q * price.get(s, Decimal(0)),
-            )
-            for s, q in qty.items()
-            if q != 0
-        ]
+        holdings = []
+        for s, q in qty.items():
+            if q == 0:
+                continue
+            px = self._get_effective_price(s, ctx)
+            holdings.append(ExpectedHolding(symbol=s, qty=q, price=px, value=q * px))
         target_map = {t.symbol: t.weight for t in self.targets}
         weighted = {h.symbol: (h.value / ctx.total) for h in holdings}
         syms = set(target_map) | set(weighted)

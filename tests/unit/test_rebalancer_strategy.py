@@ -936,3 +936,47 @@ async def test_unpriced_short_cover_reserves_cash_via_avg_price():
     long_buy = sum(o.qty for o in plan.orders
                    if o.symbol == long_t and o.side is OrderSide.BUY)
     assert long_buy == Decimal("40")
+    # _summarize also charges the unpriced cover at avg_price: 500,000 - 100,000
+    # (cover) - 400,000 (long buy) = 0. Old (unpriced=0) would report 100,000.
+    assert plan.expected_cash.amount == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_cash_sink_reserves_for_unpriced_cover():
+    sink = Symbol(ticker="153130")   # cash sink, priced
+    held = Symbol(ticker="005930")   # on-target long, priced
+    short = Symbol(ticker="000660")  # off-target unpriced short -> cover BUY
+    # total 1,000,000; buffer 2% -> reserve 20,000; cash 500,000
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("500000"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=held, qty=Decimal("50"),
+                avg_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+            ),
+            Position(
+                symbol=short, qty=Decimal("-10"),
+                avg_price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+                current_price=None,  # unpriced -> cover BUY uses avg_price
+            ),
+        ],
+    )
+    quote = Quote(
+        symbol=sink, price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {sink: quote}),  # no quote for `short`
+        targets=[TargetWeight(symbol=held, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0.02"),
+        cash_sink=sink,
+        min_order_value=Decimal("1000000"),  # suppress normal pass for held
+    )
+    plan = await rb.compute_plan()
+    sink_qty = sum(o.qty for o in plan.orders if o.symbol == sink)
+    # projected_cash = 500,000 - 100,000 (unpriced cover @ avg) = 400,000;
+    # surplus above reserve = 380,000 -> 38 shares.
+    # Old (unpriced cover = 0) would leave 480,000 -> 48 shares.
+    assert sink_qty == Decimal("38")
