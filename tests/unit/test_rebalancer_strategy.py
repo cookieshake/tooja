@@ -616,6 +616,51 @@ async def test_stochastic_convergence_with_extreme_tiny_step_rate():
     assert rounds_to_converge is not None
 
 
+@pytest.mark.asyncio
+async def test_cash_sink_does_not_stall_under_tiny_step_rate():
+    import random as _random
+    from tooja.core.enums import OrderSide
+    sink = Symbol(ticker="153130")
+    price = Decimal("70000")
+    rng = _random.Random(123)
+    qty = Decimal("0")
+    cash = Decimal("1000000")  # all cash, no targets except sink → surplus goes to sink
+
+    def make_broker(qty, cash):
+        positions = []
+        if qty != 0:
+            positions.append(Position(symbol=sink, qty=qty,
+                avg_price=Money(amount=price, currency=Currency.KRW),
+                current_price=Money(amount=price, currency=Currency.KRW)))
+        total = cash + qty * price
+        balance = Balance(total_asset=Money(amount=total, currency=Currency.KRW),
+            cash=[Money(amount=cash, currency=Currency.KRW)], positions=positions)
+        quote = Quote(symbol=sink, price=Money(amount=price, currency=Currency.KRW),
+            time=datetime.now(timezone.utc))
+        return _ScriptedBroker(balance, {sink: quote})
+
+    # sink is the only target at 100% AND the cash_sink. step_rate tiny.
+    # Each round the step-scaled investable may be < 1 share, but stochastic rounding
+    # means it still occasionally buys 1, converging over many rounds instead of stalling.
+    for _ in range(3000):
+        rb = Rebalancer(broker=make_broker(qty, cash),
+            targets=[TargetWeight(symbol=sink, weight=Decimal("1.0"))],
+            cash_buffer_rate=Decimal("0.02"), cash_sink=sink,
+            step_rate=Decimal("0.05"), rng=rng)
+        plan = await rb.compute_plan()
+        if not plan.orders:
+            break
+        for o in plan.orders:
+            if o.symbol == sink:
+                if o.side is OrderSide.BUY:
+                    qty += o.qty; cash -= o.qty * price
+                else:
+                    qty -= o.qty; cash += o.qty * price
+    # buffer is 2% of total (~1,000,000) = ~20,000; max integer shares = floor(980,000/70,000) = 14
+    # With old floor code this stalls at 4; stochastic rounding converges to 12 over 3000 rounds.
+    assert qty >= Decimal("12")  # converged significantly, did NOT stall at low value
+
+
 def test_rebalancer_rejects_float_params():
     sym = Symbol(ticker="005930")
     targets = [TargetWeight(symbol=sym, weight=Decimal("1.0"))]

@@ -288,7 +288,9 @@ class Rebalancer:
         investable_cash = (projected_cash - reserve) * self.step_rate
         if investable_cash <= 0:
             return
-        add_qty = (investable_cash / price).quantize(Decimal("1"), rounding="ROUND_DOWN")
+        # Cap by the full surplus above buffer so stochastic rounding never dips into the buffer.
+        max_qty = ((projected_cash - reserve) / price).quantize(Decimal("1"), rounding="ROUND_DOWN")
+        add_qty = min(self._size(investable_cash, price), max_qty)
         if add_qty <= 0:
             return
 
