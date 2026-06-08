@@ -1,0 +1,100 @@
+site_name: tooja
+site_description: Unified async Python client for Korean securities brokers (KIS & Toss)
+site_url: https://cookieshake.github.io/tooja/
+repo_url: https://github.com/cookieshake/tooja
+repo_name: cookieshake/tooja
+edit_uri: edit/main/
+copyright: MIT License
+
+theme:
+  name: material
+  language: en
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - scripts/gen_ref_pages.py
+  - literate-nav:
+      nav_file: SUMMARY.md
+  - section-index
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            # tooja uses type hints rather than structured docstrings (no Args/Returns).
+            # Disabling the parser stops griffe from misreading free-form docstrings
+            # (e.g. TokenManager's "Methods:" block) as sections — keeps strict build green.
+            docstring_style: null
+            show_root_heading: true
+            show_if_no_docstring: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            show_source: true
+            signature_crossrefs: true
+            separate_signature: true
+            merge_init_into_class: true
+            docstring_section_style: spacy
+            filters: ["!^_"]
+  # llmstxt must run last, after other plugins have generated and rendered pages.
+  - llmstxt:
+      full_output: llms-full.txt
+      markdown_description: >-
+        tooja is a unified async Python client for Korean securities brokers
+        (Korea Investment & Securities (KIS) and Toss Securities). It pairs a
+        broker-agnostic common abstraction (Quote, Order, Balance, ...) with a
+        raw escape hatch that calls each broker's native API directly for
+        unsupported endpoints. The goal is to do for Korean brokers what ccxt
+        did for crypto exchanges.
+      sections:
+        Documentation:
+          - index.md: Overview, installation, and quick start
+        API reference:
+          - reference/**/*.md
+
+nav:
+  - Home: index.md
+  - API Reference: reference/
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - toc:
+      permalink: true
+
+# docs/superpowers/ holds local-only working docs (.gitignore) — exclude from the site
+exclude_docs: |
+  superpowers/
