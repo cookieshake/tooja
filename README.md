@@ -10,10 +10,6 @@ what ccxt did for crypto exchanges.
 
 Adapters: **Korea Investment & Securities (KIS)** · **Toss Securities (Toss)**.
 
-> ⚠️ **Status: 0.1.0 (early).** Verified end-to-end on the demo (paper) environment.
-> Live orders reach the KIS servers, but fill-level verification is still pending —
-> **start with small amounts on the real environment.**
-
 ---
 
 ## Features
