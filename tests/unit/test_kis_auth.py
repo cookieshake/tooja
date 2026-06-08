@@ -1,27 +1,31 @@
-"""TokenCache / ApprovalCache expiry logic.
+"""TokenCache / ApprovalCache expiry logic and TokenManager persistence wiring.
 
-These are pure unit tests — no HTTP. They exercise the cache file format and
-the `expired()` checks.
+Pure unit tests — no HTTP. Disk persistence itself is covered by
+tests/unit/test_token_cache.py; here we verify the dataclass expiry checks and
+that TokenManager round-trips through a TokenStore with app_key scoping.
 """
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from tooja.brokers.kis.auth import (
-    ApprovalCache,
-    TokenCache,
-    _load_approval,
-    _load_token,
-    _save_approval,
-    _save_token,
-)
-
+from tooja.brokers.kis.auth import ApprovalCache, TokenCache, TokenManager
+from tooja.brokers.kis.credentials import KisCredentials
+from tooja.core.token_cache import scope_tag
 
 _NOW = datetime(2026, 6, 1, 9, 0, tzinfo=timezone.utc)
+
+
+def _creds(app_key: str = "APPKEY") -> KisCredentials:
+    return KisCredentials(
+        app_key=app_key,
+        app_secret="SECRET",
+        cano="50000000",
+        acnt_prdt_cd="01",
+        hts_id="hts",
+    )
 
 
 def test_token_cache_not_expired_when_within_ttl():
@@ -49,82 +53,72 @@ def test_approval_cache_expired_after_23h():
     assert ac.expired(now=_NOW + timedelta(hours=23, minutes=1)) is True
 
 
-def test_token_roundtrip_via_disk(tmp_path, monkeypatch):
-    import tooja.brokers.kis.auth as auth_mod
+@pytest.fixture
+def cache_dir(tmp_path, monkeypatch):
+    import tooja.core.token_cache as tc
 
-    token_file = tmp_path / "token.json"
-    monkeypatch.setattr(auth_mod, "_TOKEN_FILE", token_file)
+    monkeypatch.setattr(tc.platformdirs, "user_cache_dir", lambda *a, **k: str(tmp_path))
+    return tmp_path
 
+
+def test_manager_persists_and_reloads_token(cache_dir):
+    """A token saved by one manager is visible to a fresh manager (disk mode)."""
+    import httpx
+
+    http = httpx.AsyncClient()
+    mgr = TokenManager(_creds(), base_url="https://x", is_virtual=False, http=http)
     tc = TokenCache(access_token="abc", expires_at=_NOW + timedelta(hours=12))
-    _save_token(tc)
-    loaded = _load_token()
-    assert loaded is not None
-    assert loaded.access_token == "abc"
-    assert loaded.expires_at == tc.expires_at
+    mgr._cache_token(tc)
+
+    mgr2 = TokenManager(_creds(), base_url="https://x", is_virtual=False, http=http)
+    assert mgr2._token is not None
+    assert mgr2._token.access_token == "abc"
 
 
-def test_approval_roundtrip_via_disk(tmp_path, monkeypatch):
-    import tooja.brokers.kis.auth as auth_mod
+def test_manager_token_scoped_by_app_key(cache_dir):
+    import httpx
 
-    file = tmp_path / "approval.json"
-    monkeypatch.setattr(auth_mod, "_APPROVAL_FILE", file)
+    http = httpx.AsyncClient()
+    mgr_a = TokenManager(_creds("KEY_A"), base_url="https://x", is_virtual=False, http=http)
+    mgr_a._cache_token(TokenCache(access_token="tok_a", expires_at=_NOW + timedelta(hours=12)))
 
-    ac = ApprovalCache(approval_key="key123", issued_at=_NOW)
-    _save_approval(ac)
-    loaded = _load_approval()
-    assert loaded is not None
-    assert loaded.approval_key == "key123"
-
-
-def test_token_load_returns_none_on_missing_file(tmp_path, monkeypatch):
-    import tooja.brokers.kis.auth as auth_mod
-
-    monkeypatch.setattr(auth_mod, "_TOKEN_FILE", tmp_path / "nope.json")
-    assert _load_token() is None
+    mgr_b = TokenManager(_creds("KEY_B"), base_url="https://x", is_virtual=False, http=http)
+    assert mgr_b._token is None
+    assert scope_tag("KEY_A") != scope_tag("KEY_B")
 
 
-def test_token_load_returns_none_on_malformed_json(tmp_path, monkeypatch):
-    import tooja.brokers.kis.auth as auth_mod
+def test_manager_memory_mode_writes_nothing(cache_dir):
+    import httpx
 
-    f = tmp_path / "token.json"
-    f.write_text("{not json")
-    monkeypatch.setattr(auth_mod, "_TOKEN_FILE", f)
-    assert _load_token() is None
-
-
-def test_scope_tag_distinct_per_app_key():
-    """Regression: cache paths must be app_key-scoped so two brokers with
-    different credentials don't trample each other's cache."""
-    from tooja.brokers.kis.auth import _approval_path, _scope_tag, _token_path
-
-    a = _scope_tag("APP_KEY_A")
-    b = _scope_tag("APP_KEY_B")
-    assert a != b
-    assert _token_path("APP_KEY_A") != _token_path("APP_KEY_B")
-    assert _approval_path("APP_KEY_A") != _approval_path("APP_KEY_B")
-    # Stable across calls.
-    assert _scope_tag("APP_KEY_A") == a
+    http = httpx.AsyncClient()
+    mgr = TokenManager(
+        _creds(), base_url="https://x", is_virtual=False, http=http, token_cache="memory"
+    )
+    mgr._cache_token(TokenCache(access_token="abc", expires_at=_NOW + timedelta(hours=12)))
+    assert not (cache_dir / "tokens").exists()
 
 
-def test_token_save_is_atomic_via_temp_rename(tmp_path, monkeypatch):
-    """Regression: _write_json must stage into a sibling .tmp then rename,
-    so a concurrent reader never sees a half-written file."""
-    import tooja.brokers.kis.auth as auth_mod
+def test_manager_invalidate_drops_cached_token(cache_dir):
+    import httpx
 
-    token_file = tmp_path / "token.json"
-    monkeypatch.setattr(auth_mod, "_TOKEN_FILE", token_file)
-
-    tc = TokenCache(access_token="abc", expires_at=_NOW + timedelta(hours=1))
-    _save_token(tc)
-    # Final file present, .tmp gone.
-    assert token_file.exists()
-    assert not token_file.with_suffix(token_file.suffix + ".tmp").exists()
+    http = httpx.AsyncClient()
+    mgr = TokenManager(_creds(), base_url="https://x", is_virtual=False, http=http)
+    mgr._cache_token(TokenCache(access_token="abc", expires_at=_NOW + timedelta(hours=12)))
+    mgr.invalidate_token()
+    assert mgr._token is None
+    mgr2 = TokenManager(_creds(), base_url="https://x", is_virtual=False, http=http)
+    assert mgr2._token is None
 
 
-def test_token_load_returns_none_when_missing_fields(tmp_path, monkeypatch):
-    import tooja.brokers.kis.auth as auth_mod
+def test_manager_persists_and_reloads_approval_key(cache_dir):
+    """An approval_key saved by one manager is visible to a fresh manager."""
+    import httpx
 
-    f = tmp_path / "token.json"
-    f.write_text(json.dumps({"access_token": "x"}))  # expires_at missing
-    monkeypatch.setattr(auth_mod, "_TOKEN_FILE", f)
-    assert _load_token() is None
+    http = httpx.AsyncClient()
+    mgr = TokenManager(_creds(), base_url="https://x", is_virtual=False, http=http)
+    ac = ApprovalCache(approval_key="ws-key-xyz", issued_at=_NOW)
+    mgr._cache_approval(ac)
+
+    mgr2 = TokenManager(_creds(), base_url="https://x", is_virtual=False, http=http)
+    assert mgr2._approval is not None
+    assert mgr2._approval.approval_key == "ws-key-xyz"

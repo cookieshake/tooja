@@ -11,7 +11,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import AsyncIterator, Literal
 
-from tooja.core.enums import Exchange, FinancialPeriod, RankingType
+from tooja.core.enums import Currency, Exchange, FinancialPeriod, RankingType
 from tooja.core.errors import UnsupportedOperation
 from tooja.core.models import (
     Balance,
@@ -20,17 +20,20 @@ from tooja.core.models import (
     Fill,
     InvestorFlow,
     MarginBalance,
+    Money,
     OHLCV,
     Order,
     OrderRequest,
     Orderbook,
     Position,
+    PriceLimit,
     ProgramTrading,
     Quote,
     RankingEntry,
     SecuritiesLending,
     ShortSellingDaily,
     StockInfo,
+    StockWarnings,
     Symbol,
     TradingHalt,
 )
@@ -76,6 +79,9 @@ class MarketClient(_Sub):
     async def get_orderbook(self, symbol: Symbol | str, *, depth: int = 10) -> Orderbook:
         raise _raise("market.get_orderbook", self._broker_name)
 
+    async def get_price_limits(self, symbol: Symbol | str) -> PriceLimit:
+        raise _raise("market.get_price_limits", self._broker_name)
+
 
 class AccountClient(_Sub):
     async def get_balance(self) -> Balance:
@@ -86,6 +92,12 @@ class AccountClient(_Sub):
 
     async def get_position(self, symbol: Symbol | str) -> Position | None:
         raise _raise("account.get_position", self._broker_name)
+
+    async def get_buying_power(self, *, currency: Currency = Currency.KRW) -> Money:
+        raise _raise("account.get_buying_power", self._broker_name)
+
+    async def get_sellable_quantity(self, symbol: Symbol | str) -> Decimal:
+        raise _raise("account.get_sellable_quantity", self._broker_name)
 
 
 class OrdersClient(_Sub):
@@ -167,6 +179,9 @@ class InfoClient(_Sub):
 
     async def is_holiday(self, d: date) -> bool:
         raise _raise("info.is_holiday", self._broker_name)
+
+    async def get_warnings(self, symbol: Symbol | str) -> StockWarnings:
+        raise _raise("info.get_warnings", self._broker_name)
 
 
 class AnalyticsClient(_Sub):

@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from tooja.brokers.kis._call import call
-from tooja.brokers.kis._mappers import balance_from_inquire, position_from_balance_row
+from tooja.brokers.kis._mappers import _dec, balance_from_inquire, position_from_balance_row
 from tooja.brokers.kis.raw.domestic_stock_trading.inquire_balance import (
     InquireBalanceExecutor,
     InquireBalanceRequest,
 )
+from tooja.brokers.kis.raw.domestic_stock_trading.inquire_psbl_order import (
+    InquirePsblOrderExecutor,
+    InquirePsblOrderRequest,
+)
+from tooja.brokers.kis.raw.domestic_stock_trading.inquire_psbl_sell import (
+    InquirePsblSellExecutor,
+    InquirePsblSellRequest,
+)
 from tooja.core.clients import AccountClient
+from tooja.core.enums import Currency
+from tooja.core.errors import UnsupportedOperation
 from tooja.core.models import Balance, Position, Symbol
+from tooja.core.money import Money
 
 if TYPE_CHECKING:
     from tooja.brokers.kis.broker import KisBroker
@@ -41,6 +53,47 @@ class KisAccountClient(AccountClient):
             if p.symbol.ticker == sym.ticker:
                 return p
         return None
+
+    async def get_buying_power(self, *, currency: Currency = Currency.KRW) -> Money:
+        if currency != Currency.KRW:
+            raise UnsupportedOperation(
+                f"KIS account.get_buying_power supports KRW only (got {currency})",
+                broker="kis",
+            )
+        creds = self._broker.credentials
+        req = InquirePsblOrderRequest(
+            CANO=creds.cano,
+            ACNT_PRDT_CD=creds.acnt_prdt_cd,
+            PDNO="",
+            ORD_UNPR="",
+            ORD_DVSN="01",
+            CMA_EVLU_AMT_ICLD_YN="N",
+            OVRS_ICLD_YN="N",
+        )
+        resp = await call(self._broker, InquirePsblOrderExecutor, req)
+        out = getattr(resp, "output", None)
+        amt = _dec(getattr(out, "nrcvb_buy_amt", None)) if out is not None else None
+        if amt is None:
+            raise UnsupportedOperation(
+                "KIS inquire-psbl-order returned no buying power", broker="kis",
+            )
+        return Money(amount=amt, currency=Currency.KRW)
+
+    async def get_sellable_quantity(self, symbol: Symbol | str) -> Decimal:
+        sym = _as_symbol(symbol)
+        creds = self._broker.credentials
+        req = InquirePsblSellRequest(
+            CANO=creds.cano, ACNT_PRDT_CD=creds.acnt_prdt_cd, PDNO=sym.ticker,
+        )
+        resp = await call(self._broker, InquirePsblSellExecutor, req)
+        out1 = getattr(resp, "output1", None)
+        if out1 is None:
+            return Decimal(0)
+        item = out1[0] if isinstance(out1, list) else out1
+        if item is None:
+            return Decimal(0)
+        qty = _dec(getattr(item, "ord_psbl_qty", None))
+        return qty if qty is not None else Decimal(0)
 
     async def _iterate_balance(self) -> tuple[list, list]:
         """Walk all CTX_AREA_NK100 pages and return concatenated output1/output2."""

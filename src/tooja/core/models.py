@@ -286,6 +286,35 @@ class TradingHalt(BaseModel):
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
+class PriceLimit(_MoneyConsistent):
+    """Daily price band. upper/lower are None for markets without limits (e.g. US)."""
+
+    _money_fields = ("upper_limit", "lower_limit", "base_price")
+    symbol: Symbol
+    upper_limit: Money | None = None
+    lower_limit: Money | None = None
+    base_price: Money | None = None
+    as_of: datetime | None = None
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class StockWarnings(BaseModel):
+    """Per-symbol trading caution flags. A flag is None when the broker does not
+    report it (each adapter fills only the flags it actually exposes)."""
+
+    symbol: Symbol
+    is_trading_halt: bool | None = None     # 거래정지
+    is_administrative: bool | None = None   # 관리종목
+    is_liquidation: bool | None = None      # 정리매매
+    is_overheated: bool | None = None       # 단기과열
+    is_caution: bool | None = None          # 투자주의
+    is_warning: bool | None = None          # 투자경고
+    is_risk: bool | None = None             # 투자위험
+    is_rights_offering: bool | None = None  # 신주인수권 등 권리 관련
+    vi_triggered: bool | None = None        # VI 발동
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
 # ─── Analytics models ────────────────────────────────
 class InvestorFlow(BaseModel):
     symbol: Symbol

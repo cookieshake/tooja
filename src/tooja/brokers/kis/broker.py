@@ -11,6 +11,7 @@ from tooja.brokers.kis.analytics import KisAnalyticsClient
 from tooja.brokers.kis._rate_limit import DEFAULT_DEMO, DEFAULT_REAL
 from tooja.brokers.kis.auth import TokenManager
 from tooja.core.rate_limit import RateLimitConfig, TokenBucket
+from tooja.core.token_cache import CacheMode
 from tooja.brokers.kis.credentials import KisCredentials
 from tooja.brokers.kis.info import KisInfoClient
 from tooja.brokers.kis.market import KisMarketClient
@@ -42,8 +43,10 @@ class KisBroker(Broker):
         acnt_prdt_cd: str = "01",
         env: Literal["real", "demo"] = "real",
         rate_limit: RateLimitConfig | None = None,
+        token_cache: CacheMode = "disk",
     ):
         self.env = env
+        self.token_cache: CacheMode = token_cache
         self.is_virtual = env == "demo"
         self.base_url = _VIRTUAL_BASE_URL if self.is_virtual else _REAL_BASE_URL
         self.rate_limit: RateLimitConfig = rate_limit or (
@@ -108,6 +111,7 @@ class KisBroker(Broker):
             base_url=self.base_url,
             is_virtual=self.is_virtual,
             http=self._http,
+            token_cache=self.token_cache,
         )
         self._open = True
 

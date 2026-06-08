@@ -5,7 +5,7 @@
 
 **한국 증권사를 위한 통합 Python 클라이언트.** 브로커에 종속되지 않는 공통 추상화(thick API)와, 필요할 때 증권사 원본 API를 그대로 호출하는 raw 탈출구(escape hatch)를 함께 제공합니다. ccxt가 거래소에 해준 일을 한국 증권사에 하는 것이 목표입니다.
 
-첫 어댑터는 **한국투자증권(KIS)** 입니다.
+현재 지원 어댑터: **한국투자증권(KIS)**, **토스증권(Toss)**.
 
 > ⚠️ **상태: 0.1.0 (초기).** KIS 단일 어댑터. 시세·계좌·주문·스트림은 모의투자(demo)에서 전 구간 검증됨. 실전(real) 주문은 코드 경로가 KIS 서버까지 정상 도달함을 확인했으나 실제 체결까지의 종단 검증은 아직입니다. **실전 사용 시 반드시 소액으로 직접 확인하세요.**
 
@@ -70,7 +70,54 @@ asyncio.run(main())
 
 ---
 
-## 인증 / 환경
+## 토스증권 (Toss) Quick Start
+
+```python
+import asyncio
+from tooja.brokers.toss import TossBroker
+
+
+async def main():
+    async with TossBroker(
+        client_id="...",
+        client_secret="...",
+        account_seq=12345678,   # 선택 — 계좌/주문 호출에만 필요
+    ) as broker:
+        quote = await broker.market.get_quote("005930")  # 삼성전자
+        print(quote.price)     # Money(amount=Decimal('...'), currency=KRW)
+
+
+asyncio.run(main())
+```
+
+### 인증
+
+| 인자 | 설명 |
+|---|---|
+| `client_id`, `client_secret` | Toss Open API OAuth2 client credentials |
+| `account_seq` | 계좌 일련번호(int). 계좌/주문 API에만 필요; 시세·정보 조회는 불필요 |
+| `token_cache` | `"disk"` (기본, 재기동 간 영속) / `"memory"` (프로세스 내) |
+| `rate_limit` | `RateLimitConfig` 직접 지정 (선택) |
+
+인증 방식: **OAuth2 client_credentials**. 액세스 토큰은 첫 호출 시 자동 발급되어 캐시됩니다.
+
+`broker.raw.<카테고리>` 로 모든 Toss 엔드포인트(환율·수수료·시장캘린더 등)에 직접 접근할 수 있습니다 (카테고리: `account`, `asset`, `auth`, `market_data`, `market_info`, `order`, `order_history`, `order_info`, `stock_info`).
+
+### 지원 매트릭스
+
+| 도메인 | 지원 메서드 | 비고 |
+|---|---|---|
+| **market** | `get_quote` · `get_quotes` · `get_orderbook` · `get_ohlcv` · `get_price_limits` | candle interval: `"1m"` · `"1d"` 만 지원 (나머지 → `UnsupportedOperation`) |
+| **account** | `get_balance` · `get_positions` · `get_position` · `get_buying_power` · `get_sellable_quantity` | `account_seq` 필수 |
+| **orders** | `create` · `get` · `cancel` · `replace` · `list_orders` · `iter_orders` | stop 주문 → `UnsupportedOperation`; `list_fills` → `UnsupportedOperation` |
+| **info** | `get_stock` · `get_warnings` · `is_holiday` | `list_halts` · `search` · `get_financials` · `get_dividends` → `UnsupportedOperation` |
+| **analytics** | — | 전체 `UnsupportedOperation` |
+| **rankings** | — | 전체 `UnsupportedOperation` |
+| **stream** | — | 전체 `UnsupportedOperation` |
+
+---
+
+## KIS 인증 / 환경
 
 | 인자 | 설명 |
 |---|---|
@@ -236,9 +283,11 @@ except OrderRejected as e:
 ## 한계 & 로드맵
 
 **현재 한계**
-- KIS 단일 어댑터 (Kiwoom / Toss / DB 등 미지원)
-- 실전 주문 종단 검증 미완 (코드 경로는 검증됨)
-- 모의투자(demo)는 일부 TR 미제공 — 예: `inquire-daily-ccld`, `search-stock-info`
+- KIS·Toss 어댑터 제공; Kiwoom / DB 등 미지원
+- KIS 실전 주문 종단 검증 미완 (코드 경로는 검증됨)
+- KIS 모의투자(demo)는 일부 TR 미제공 — 예: `inquire-daily-ccld`, `search-stock-info`
+- Toss: stream/analytics/rankings 미지원
+- Toss: OHLCV interval `"1m"`·`"1d"` 만 지원 (5m·15m 등 없음)
 - raw 탈출구는 클래스 접근까지만 (실행 헬퍼는 향후)
 
 **로드맵**

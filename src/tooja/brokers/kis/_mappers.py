@@ -217,6 +217,18 @@ def quote_from_inquire_price(
     )
 
 
+def price_limit_from_inquire_price(symbol: Symbol, output: Any, raw: dict[str, Any]) -> "PriceLimit":
+    """InquirePrice output -> PriceLimit (KRW upper/lower band)."""
+    from tooja.core.models import PriceLimit
+
+    return PriceLimit(
+        symbol=symbol,
+        upper_limit=_money_krw(getattr(output, "stck_mxpr", None)),
+        lower_limit=_money_krw(getattr(output, "stck_llam", None)),
+        raw=raw,
+    )
+
+
 def orderbook_from_inquire_asking(
     symbol: Symbol, output1: Any, raw: dict[str, Any], *, depth: int = 10
 ) -> Orderbook:
@@ -901,6 +913,24 @@ def orderbook_from_ws_record(record: dict[str, str], *, depth: int = 10) -> "Ord
     return Orderbook(
         symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),
         time=when, bids=bids, asks=asks, raw=record,
+    )
+
+
+def stock_warnings_from_search(symbol: Symbol, output: Any, raw: dict[str, Any]) -> "StockWarnings":
+    """search-stock-info -> StockWarnings. KIS exposes only trading-halt and
+    administrative-issue flags here; finer caution levels stay None."""
+    from tooja.core.models import StockWarnings
+
+    def _yn(v: Any) -> bool | None:
+        if v is None:
+            return None
+        return str(v).strip().upper() == "Y"
+
+    return StockWarnings(
+        symbol=symbol,
+        is_trading_halt=_yn(getattr(output, "tr_stop_yn", None)),
+        is_administrative=_yn(getattr(output, "admn_item_yn", None)),
+        raw=raw,
     )
 
 
