@@ -51,11 +51,13 @@ class Rebalancer:
         *,
         cash_buffer_rate: Decimal = Decimal("0.02"),
         min_order_value: Decimal = Decimal("10000"),
+        drift_band: Decimal = Decimal("0"),
     ):
         self.broker = broker
         self.targets = list(targets)
         self.cash_buffer_rate = cash_buffer_rate
         self.min_order_value = min_order_value
+        self.drift_band = drift_band
         self._validate_weights()
 
     def _validate_weights(self) -> None:
@@ -135,6 +137,10 @@ class Rebalancer:
             actual_weight = actual / ctx.total
 
             diff_value = target_value - actual
+            if target_value > 0 and (abs(diff_value) / target_value) < self.drift_band:
+                drift += abs(actual_weight - t.weight)
+                continue
+
             if abs(diff_value) < self.min_order_value:
                 # No trade — residual drift = current drift.
                 drift += abs(actual_weight - t.weight)
