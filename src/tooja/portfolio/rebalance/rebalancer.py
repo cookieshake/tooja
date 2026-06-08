@@ -157,6 +157,7 @@ class Rebalancer:
     ) -> tuple[list[OrderRequest], list[tuple[OrderRequest, Decimal]]]:
         sell_orders: list[OrderRequest] = []
         buy_candidates: list[tuple[OrderRequest, Decimal]] = []  # (order, |diff_value| 우선순위)
+        held_qties = {p.symbol: p.qty for p in ctx.positions}
         for t in self.targets:
             if t.symbol in ctx.unpriced:
                 continue
@@ -194,7 +195,7 @@ class Rebalancer:
                     (MarketOrder(symbol=t.symbol, side=OrderSide.BUY, qty=qty), abs(diff_value))
                 )
             else:
-                held_qty = next((p.qty for p in ctx.positions if p.symbol == t.symbol), Decimal(0))
+                held_qty = held_qties.get(t.symbol, Decimal(0))
                 sell_qty = min(qty, held_qty)
                 if sell_qty > 0:
                     sell_orders.append(
