@@ -661,6 +661,21 @@ async def test_cash_sink_does_not_stall_under_tiny_step_rate():
     assert qty >= Decimal("12")  # converged significantly, did NOT stall at low value
 
 
+def test_rebalancer_rejects_negative_weight():
+    sym1 = Symbol(ticker="005930")
+    sym2 = Symbol(ticker="000660")
+    broker = _ScriptedBroker(
+        Balance(total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW)),
+        {},
+    )
+    with pytest.raises(ValueError, match="non-negative"):
+        Rebalancer(
+            broker=broker,
+            targets=[TargetWeight(symbol=sym1, weight=Decimal("-0.5")),
+                     TargetWeight(symbol=sym2, weight=Decimal("1.5"))],
+        )
+
+
 def test_rebalancer_rejects_float_params():
     sym = Symbol(ticker="005930")
     targets = [TargetWeight(symbol=sym, weight=Decimal("1.0"))]

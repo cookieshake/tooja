@@ -88,6 +88,8 @@ class Rebalancer:
         symbols = [t.symbol for t in self.targets]
         if len(symbols) != len(set(symbols)):
             raise ValueError("targets contain duplicate symbols")
+        if any(t.weight < 0 for t in self.targets):
+            raise ValueError("target weights must be non-negative")
         total = sum((t.weight for t in self.targets), Decimal(0))
         if abs(total - Decimal("1.0")) > _WEIGHT_TOLERANCE:
             raise ValueError(
