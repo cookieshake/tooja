@@ -13,6 +13,7 @@ Constraints:
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Iterable
@@ -53,6 +54,7 @@ class Rebalancer:
         min_order_value: Decimal = Decimal("10000"),
         drift_band: Decimal = Decimal("0"),
         step_rate: Decimal = Decimal("1.0"),
+        rng: random.Random | None = None,
     ):
         self.broker = broker
         self.targets = list(targets)
@@ -60,6 +62,7 @@ class Rebalancer:
         self.min_order_value = min_order_value
         self.drift_band = drift_band
         self.step_rate = max(Decimal("0"), min(step_rate, Decimal("1.0")))
+        self._rng = rng if rng is not None else random.Random()
         self._validate_weights()
 
     def _validate_weights(self) -> None:
@@ -171,10 +174,26 @@ class Rebalancer:
             drift += abs((actual_after / ctx.total) - t.weight)
         return orders, drift
 
-    def _size(self, diff_value: Decimal, price: Decimal) -> Decimal:
-        """Integer share count (floor of |diff_value| / price), sign-agnostic. step_rate / stochastic rounding are added in later tasks."""
-        qty_raw = abs(diff_value) / price
-        return qty_raw.quantize(Decimal("1"), rounding="ROUND_DOWN")
+    def _size(self, adjusted_diff: Decimal, price: Decimal) -> Decimal:
+        """Compute integer share count from an already-scaled difference value.
+
+        When ``step_rate == 1.0`` (full rebalance), the result is deterministic:
+        ``floor(|adjusted_diff| / price)``.
+
+        When ``step_rate < 1`` (incremental mode), stochastic rounding is used:
+        the fractional part ``frac`` of the raw unit count becomes the probability
+        of rounding up to ``floor + 1``.  This keeps the expected value equal to
+        the exact unit count (unbiased), so repeated partial steps converge to the
+        target without systematic under-shooting.
+        """
+        units = abs(adjusted_diff) / price
+        floor = units.quantize(Decimal("1"), rounding="ROUND_DOWN")
+        if self.step_rate >= Decimal("1.0"):
+            return floor
+        frac = units - floor
+        if Decimal(str(self._rng.random())) < frac:
+            return floor + Decimal("1")
+        return floor
 
     def _exit_off_targets(self, ctx: _PlanContext, orders: list[OrderRequest]) -> None:
         # Symbols currently held but not in targets -> fully exit. Long

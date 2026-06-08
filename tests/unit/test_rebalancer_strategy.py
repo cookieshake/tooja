@@ -1,3 +1,5 @@
+import random
+
 import pytest
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -99,3 +101,39 @@ async def test_drift_band_skips_small_drift():
     )
     plan = await rb.compute_plan()
     assert plan.orders == []
+
+
+@pytest.mark.asyncio
+async def test_stochastic_rounding_is_seeded_and_unbiased():
+    sym = Symbol(ticker="005930")
+
+    def make_rb(seed: int):
+        balance = Balance(
+            total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+            cash=[Money(amount=Decimal("1000000"), currency=Currency.KRW)],
+            positions=[],
+        )
+        quote = Quote(
+            symbol=sym,
+            price=Money(amount=Decimal("70000"), currency=Currency.KRW),
+            time=datetime.now(timezone.utc),
+        )
+        return Rebalancer(
+            broker=_ScriptedBroker(balance, {sym: quote}),
+            targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+            cash_buffer_rate=Decimal("0"),
+            step_rate=Decimal("0.5"),  # 조정 gap 50만 → 50만/7만 = 7.142..주
+            rng=random.Random(seed),
+        )
+
+    # 동일 seed → 결정적 재현
+    p1 = await make_rb(42).compute_plan()
+    p2 = await make_rb(42).compute_plan()
+    assert p1.orders[0].qty == p2.orders[0].qty
+    # floor 7 또는 ceil 8 중 하나
+    assert p1.orders[0].qty in (Decimal("7"), Decimal("8"))
+
+    # 무편향: 다수 시도 평균이 7.14에 근접
+    qtys = [int((await make_rb(s).compute_plan()).orders[0].qty) for s in range(400)]
+    avg = sum(qtys) / len(qtys)
+    assert 7.0 < avg < 7.3  # 기댓값 ≈ 7.142
