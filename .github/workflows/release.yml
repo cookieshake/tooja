@@ -18,8 +18,8 @@ jobs:
     permissions:
       id-token: write  # mint the short-lived OIDC token for Trusted Publishing
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
 
