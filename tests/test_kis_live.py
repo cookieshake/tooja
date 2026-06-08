@@ -5,7 +5,7 @@ Hits the real KIS demo endpoint for EVERY apiportal-defined REST endpoint
 (builds Request model + would-be call info, does not send).
 
 Run:    uv run pytest -m kis_live -s
-Report: written to .kis-spec/test_results.json
+Report: written to the per-user OS cache dir (platformdirs "tooja/kis-live").
 
 Skipped automatically (collected but skipped):
 - dangerous POST endpoints (order/revise/cancel/buy/sell) — DRY_RUN classification
@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import platformdirs
 import pytest
 
 from tooja.brokers.kis.raw.base import (
@@ -36,11 +37,15 @@ from tooja.brokers.kis.raw.base import (
 from tooja.brokers.kis.raw.oauth.tokenp import TokenpExecutor, TokenpRequest
 
 ROOT = Path(__file__).resolve().parent.parent
-SPEC_DIR = ROOT / ".kis-spec" / "api-list"
-CATS_FILE = ROOT / ".kis-spec" / "categories.json"
-REPORT_PATH = ROOT / ".kis-spec" / "test_results.json"
-TOKEN_CACHE = ROOT / ".kis-spec" / "token.json"
-APPROVAL_CACHE = ROOT / ".kis-spec" / "approval_key.json"
+# Endpoint specs are the committed source-of-truth under specs/kis/ — no .kis-spec dependency,
+# so this module imports cleanly even when no local .kis-spec dump exists.
+SPEC_DIR = ROOT / "specs" / "kis" / "api-list"
+CATS_FILE = ROOT / "specs" / "kis" / "categories.json"
+# Runtime artifacts (token cache, results report) live in the per-user OS cache dir, never the repo.
+_CACHE_DIR = Path(platformdirs.user_cache_dir("tooja")) / "kis-live"
+REPORT_PATH = _CACHE_DIR / "test_results.json"
+TOKEN_CACHE = _CACHE_DIR / "token.json"
+APPROVAL_CACHE = _CACHE_DIR / "approval_key.json"
 
 REQ_DELAY = 0.55  # ~1.8 req/s — demo limit margin
 WS_WAIT_SECONDS = 4.0  # time to wait for messages after subscribe
@@ -514,6 +519,7 @@ def _load_cached(path: Path, ttl_seconds: int) -> str | None:
 
 
 def _save_cached(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"value": value, "fetched_at": time.time()}))
 
 
@@ -686,6 +692,8 @@ def classify(result: dict[str, Any]) -> str:
 # ---------- pytest fixtures + collection ----------
 
 def _collect_endpoints() -> list[tuple[str, dict[str, Any]]]:
+    if not CATS_FILE.exists():
+        return []
     cats = json.loads(CATS_FILE.read_text())
     out: list[tuple[str, dict[str, Any]]] = []
     for cat in cats:
@@ -897,6 +905,7 @@ async def test_ws_endpoint(item):
 
 
 def _save_results() -> None:
+    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     REPORT_PATH.write_text(json.dumps(RESULTS, ensure_ascii=False, indent=2))
 
 
