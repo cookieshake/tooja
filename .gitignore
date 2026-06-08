@@ -23,3 +23,6 @@ uv-*.lock
 
 # Superpowers working docs (specs/plans) — local-only, do not commit
 docs/superpowers/
+
+# Claude Code local session/agent state
+.claude/

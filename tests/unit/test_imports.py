@@ -14,6 +14,7 @@ def test_core_top_level_exports():
         "Position", "Balance", "Order", "Fill",
         "MarketOrder", "LimitOrder", "StopLimitOrder", "OrderRequest",
         "StockInfo", "FinancialSummary", "Dividend", "TradingHalt",
+        "PriceLimit", "StockWarnings",
         "InvestorFlow", "ProgramTrading", "ShortSellingDaily",
         "MarginBalance", "SecuritiesLending",
         "RankingEntry", "OrderUpdate", "StreamControlEvent",

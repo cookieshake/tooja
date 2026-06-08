@@ -151,3 +151,37 @@ async def test_close_releases_http_even_when_open_failed_midway():
     await b.close()
     assert b._http is None  # internal http released
     assert b._open is False
+
+
+def test_token_cache_mode_is_forwarded_to_token_manager(tmp_path, monkeypatch):
+    import asyncio
+
+    import tooja.core.token_cache as tc
+    from tooja.brokers.kis.broker import KisBroker
+
+    monkeypatch.setattr(tc.platformdirs, "user_cache_dir", lambda *a, **k: str(tmp_path))
+
+    broker = KisBroker(
+        app_key="K", app_secret="S", cano="50000000", hts_id="hts",
+        token_cache="memory",
+    )
+    assert broker.token_cache == "memory"
+
+    # open() builds the TokenManager with the chosen mode.
+    asyncio.run(broker.open())
+    assert broker._tokens is not None
+    assert broker._tokens._store.mode == "memory"
+    asyncio.run(broker.close())
+
+
+@pytest.mark.parametrize("method", [
+    "market.get_price_limits",
+    "account.get_buying_power",
+    "account.get_sellable_quantity",
+    "info.get_warnings",
+])
+def test_kis_supports_promoted_methods(method):
+    from tooja.brokers.kis.broker import KisBroker
+
+    broker = KisBroker(app_key="K", app_secret="S", cano="12345678", hts_id="H")
+    assert broker.supports(method) is True

@@ -18,6 +18,7 @@ from tooja.brokers.kis._mappers import (
     ohlcv_from_intraday_item,
     ohlcv_from_overseas_daily_item,
     orderbook_from_inquire_asking,
+    price_limit_from_inquire_price,
     quote_from_inquire_price,
     quote_from_overseas_price,
 )
@@ -48,7 +49,7 @@ from tooja.brokers.kis.raw.overseas_stock_quotations.price import (
 from tooja.core.clients import MarketClient
 from tooja.core.enums import Exchange
 from tooja.core.errors import UnsupportedOperation
-from tooja.core.models import OHLCV, Orderbook, Quote, Symbol
+from tooja.core.models import OHLCV, Orderbook, PriceLimit, Quote, Symbol
 
 if TYPE_CHECKING:
     from tooja.brokers.kis.broker import KisBroker
@@ -135,6 +136,21 @@ class KisMarketClient(MarketClient):
         return orderbook_from_inquire_asking(
             sym, resp.output1, resp.output1.model_dump(), depth=depth,
         )
+
+    async def get_price_limits(self, symbol: Symbol | str) -> PriceLimit:
+        sym = _as_symbol(symbol)
+        if sym.exchange not in (Exchange.KRX, Exchange.NXT):
+            raise UnsupportedOperation(
+                f"KIS market.get_price_limits supports KRX only (got {sym.exchange})",
+                broker="kis",
+            )
+        req = InquirePriceRequest(FID_COND_MRKT_DIV_CODE="J", FID_INPUT_ISCD=sym.ticker)
+        resp = await call(self._broker, InquirePriceExecutor, req)
+        if resp.output is None:
+            raise UnsupportedOperation(
+                f"KIS inquire-price returned no output for {sym}", broker="kis",
+            )
+        return price_limit_from_inquire_price(sym, resp.output, resp.output.model_dump())
 
     async def get_ohlcv(
         self,

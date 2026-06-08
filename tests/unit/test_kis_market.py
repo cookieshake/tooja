@@ -47,3 +47,43 @@ async def test_intraday_interval_sets_etc_cls_code(monkeypatch, interval, expect
         await broker.close()
 
     assert captured["request"].FID_ETC_CLS_CODE == expected_etc
+
+
+@pytest.mark.asyncio
+async def test_get_price_limits_maps_upper_lower(monkeypatch):
+    from tooja.core.money import Money
+    from tooja.core.enums import Currency
+
+    async def fake_call(broker, executor_cls, request, *, tr_id=None, extra_headers=None):
+        assert request.FID_INPUT_ISCD == "005930"
+        return SimpleNamespace(
+            output=SimpleNamespace(
+                stck_mxpr="91000",
+                stck_llam="49000",
+                model_dump=lambda: {"stck_mxpr": "91000", "stck_llam": "49000"},
+            ),
+        )
+
+    monkeypatch.setattr(market_mod, "call", fake_call)
+    broker = _broker(env="real")
+    await broker.open()
+    try:
+        pl = await KisMarketClient(broker).get_price_limits("005930")
+    finally:
+        await broker.close()
+
+    assert pl.upper_limit == Money(amount=Decimal("91000"), currency=Currency.KRW)
+    assert pl.lower_limit == Money(amount=Decimal("49000"), currency=Currency.KRW)
+
+
+@pytest.mark.asyncio
+async def test_get_price_limits_rejects_overseas(monkeypatch):
+    from tooja.core.errors import UnsupportedOperation
+
+    broker = _broker(env="real")
+    await broker.open()
+    try:
+        with pytest.raises(UnsupportedOperation):
+            await KisMarketClient(broker).get_price_limits("NASD:AAPL")
+    finally:
+        await broker.close()

@@ -19,6 +19,7 @@ from tooja.brokers.kis._mappers import (
     financial_summary_from_ratio_row,
     kst_today,
     stock_info_from_search,
+    stock_warnings_from_search,
     trading_halt_from_vi_row,
 )
 from tooja.brokers.kis.raw.domestic_stock_industry.chk_holiday import (
@@ -48,6 +49,7 @@ from tooja.core.models import (
     Dividend,
     FinancialSummary,
     StockInfo,
+    StockWarnings,
     Symbol,
     TradingHalt,
 )
@@ -87,6 +89,17 @@ class KisInfoClient(InfoClient):
                 broker="kis",
             )
         return stock_info_from_search(sym, out, out.model_dump())
+
+    async def get_warnings(self, symbol: Symbol | str) -> StockWarnings:
+        sym = _as_symbol(symbol)
+        req = SearchStockInfoRequest(PRDT_TYPE_CD="300", PDNO=sym.ticker)
+        resp = await call(self._broker, SearchStockInfoExecutor, req)
+        out = getattr(resp, "output", None)
+        if out is None:
+            raise SymbolNotFound(
+                f"KIS search-stock-info returned no result for {sym}", broker="kis",
+            )
+        return stock_warnings_from_search(sym, out, out.model_dump())
 
     async def get_dividends(
         self, symbol: Symbol | str, *, since: date | None = None,
