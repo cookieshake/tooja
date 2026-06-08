@@ -706,3 +706,85 @@ async def test_cash_budget_partial_order_when_short_on_cash():
     assert buys.get(a) == Decimal("2")
     total_buy = sum(o.qty * Decimal("100000") for o in plan.orders)
     assert total_buy <= Decimal("300000")
+
+
+@pytest.mark.asyncio
+async def test_no_trade_band_suppresses_subshare_churn():
+    """No-trade band keeps orders empty when every gap is < one share's price.
+
+    Setup:
+      total=1,000,000, cash_buffer_rate=0 → investable=1,000,000
+      price=70,000 per share
+      sym1 weight 0.525 → target 525,000; held 7 shares = 490,000; gap +35,000
+      sym2 weight 0.475 → target 475,000; held 7 shares = 490,000; gap -15,000
+
+    Both gaps (35,000 and 15,000) are above the default min_order_value (10,000)
+    but strictly below price (70,000 = one share). The no-trade band (abs(diff) < price
+    → skip) must suppress all orders regardless of stochastic seed.
+
+    Without the band: seed 99 produces ~18 trade rounds out of 50 (frac_sym1=0.25,
+    frac_sym2~=0.107) — confirming this test fails against pre-band code.
+    """
+    import random as _random
+
+    sym1 = Symbol(ticker="005930")
+    sym2 = Symbol(ticker="000660")
+    price = Decimal("70000")
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("20000"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=sym1,
+                qty=Decimal("7"),
+                avg_price=Money(amount=price, currency=Currency.KRW),
+                current_price=Money(amount=price, currency=Currency.KRW),
+            ),
+            Position(
+                symbol=sym2,
+                qty=Decimal("7"),
+                avg_price=Money(amount=price, currency=Currency.KRW),
+                current_price=Money(amount=price, currency=Currency.KRW),
+            ),
+        ],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[
+            TargetWeight(symbol=sym1, weight=Decimal("0.525")),
+            TargetWeight(symbol=sym2, weight=Decimal("0.475")),
+        ],
+        cash_buffer_rate=Decimal("0"),
+        step_rate=Decimal("0.5"),
+        rng=_random.Random(99),
+    )
+    # Run 50 plans against the same (fixed) broker state; the band must keep all empty.
+    for _ in range(50):
+        plan = await rb.compute_plan()
+        assert plan.orders == [], f"no-trade band failed: {plan.orders}"
+
+
+@pytest.mark.asyncio
+async def test_no_trade_band_allows_multishare_gap():
+    """Gap clearly >= one share's price must still produce an order (band doesn't block real trades).
+
+    0 shares held, 100% target, price 70,000, cash 1,000,000 → gap ~1,000,000 >> price.
+    """
+    sym = Symbol(ticker="005930")
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("1000000"), currency=Currency.KRW)],
+        positions=[],
+    )
+    quote = Quote(
+        symbol=sym,
+        price=Money(amount=Decimal("70000"), currency=Currency.KRW),
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {sym: quote}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    plan = await rb.compute_plan()
+    assert any(o.symbol == sym and o.qty > 0 for o in plan.orders)

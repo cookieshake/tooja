@@ -173,6 +173,11 @@ class Rebalancer:
                 continue
             ctx.current_price[t.symbol] = price
 
+            # No-trade band: ignore gaps smaller than one share. Prevents stochastic
+            # rounding from churning ±1 share around a non-integer-share target.
+            if abs(diff_value) < price:
+                continue
+
             adjusted_diff = diff_value * self.step_rate
             if self.direction is RebalanceDirection.BUY_ONLY and adjusted_diff < 0:
                 continue
