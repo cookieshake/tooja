@@ -13,6 +13,7 @@ Constraints:
 
 from __future__ import annotations
 
+import asyncio
 import random
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -119,7 +120,7 @@ class Rebalancer:
         self._exit_off_targets(ctx, fixed_orders)  # off-target 청산을 예산 전에 합류
 
         orders = self._apply_cash_budget(ctx, fixed_orders, buy_candidates)
-        await self._apply_cash_sink(ctx, orders)
+        self._apply_cash_sink(ctx, orders)
         orders.sort(key=lambda o: 0 if o.side is OrderSide.SELL else 1)
 
         holdings, cash, drift = self._summarize(ctx, orders)
@@ -145,17 +146,34 @@ class Rebalancer:
         )
 
     async def _resolve_prices(self, ctx: _PlanContext) -> None:
+        # Position prices: prefer position.current_price (matching currency), else needs a quote.
+        need_quote: set[Symbol] = set()
         for pos in ctx.positions:
             if pos.current_price is not None and pos.current_price.currency == ctx.currency:
-                price = pos.current_price.amount
+                ctx.current_price[pos.symbol] = pos.current_price.amount
             else:
-                price = await self._lookup_price(pos.symbol, ctx.currency) or Decimal(0)
-            if price > 0:
-                ctx.current_price[pos.symbol] = price
+                need_quote.add(pos.symbol)
+        # Target symbols and cash_sink that don't yet have a price also need a quote.
+        for t in self.targets:
+            if t.symbol not in ctx.current_price:
+                need_quote.add(t.symbol)
+        if self.cash_sink is not None and self.cash_sink not in ctx.current_price:
+            need_quote.add(self.cash_sink)
+        # Fetch all missing quotes concurrently.
+        symbols = list(need_quote)
+        if symbols:
+            results = await asyncio.gather(
+                *(self._lookup_price(s, ctx.currency) for s in symbols)
+            )
+            for sym, price in zip(symbols, results):
+                if price is not None and price > 0:
+                    ctx.current_price[sym] = price
+        # Compute current position values; flag unpriced holdings (incl. shorts qty<0).
+        for pos in ctx.positions:
+            price = ctx.current_price.get(pos.symbol)
+            if price is not None and price > 0:
                 ctx.current_value[pos.symbol] = pos.qty * price
             elif pos.qty != 0:
-                # Catches shorts (qty<0) too — silently dropping them would
-                # leak into the BUY pass with actual=0.
                 ctx.unpriced.add(pos.symbol)
 
     async def _diff_targets(
@@ -177,10 +195,7 @@ class Rebalancer:
                 continue
             price = ctx.current_price.get(t.symbol)
             if price is None or price <= 0:
-                price = await self._lookup_price(t.symbol, ctx.currency)
-            if price is None or price <= 0:
                 continue
-            ctx.current_price[t.symbol] = price
 
             # No-trade band: ignore gaps smaller than one share. Prevents stochastic
             # rounding from churning ±1 share around a non-integer-share target.
@@ -272,19 +287,14 @@ class Rebalancer:
                     available -= affordable * px
         return orders
 
-    async def _apply_cash_sink(self, ctx: _PlanContext, orders: list[OrderRequest]) -> None:
+    def _apply_cash_sink(self, ctx: _PlanContext, orders: list[OrderRequest]) -> None:
         """Invest surplus cash above buffer into the sink symbol."""
         if self.cash_sink is None:
             return
 
         price = ctx.current_price.get(self.cash_sink)
         if price is None or price <= 0:
-            price = await self._lookup_price(self.cash_sink, ctx.currency)
-        if price is None or price <= 0:
-            return  # 가격 모르면 투입 불가
-
-        # 가격을 캐시해 _summarize가 sink 홀딩을 올바르게 평가하도록 함
-        ctx.current_price[self.cash_sink] = price
+            return  # price unknown -> cannot invest
 
         # 주문 반영 후 예상 현금
         projected_cash = ctx.starting_cash
