@@ -31,6 +31,12 @@ class OrderSide(str, Enum):
     SELL = "sell"
 
 
+class RebalanceDirection(str, Enum):
+    BOTH = "both"
+    BUY_ONLY = "buy_only"
+    SELL_ONLY = "sell_only"
+
+
 class OrderStatus(str, Enum):
     PENDING = "pending"
     OPEN = "open"
