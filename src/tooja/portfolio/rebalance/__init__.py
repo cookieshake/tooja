@@ -1,11 +1,11 @@
-"""Portfolio utilities — rebalancer, weights, drift detection."""
+"""Rebalancer package."""
 
-from tooja.portfolio.rebalance import (
+from tooja.portfolio.rebalance.models import (
     ExpectedHolding,
-    Rebalancer,
     RebalancePlan,
     TargetWeight,
 )
+from tooja.portfolio.rebalance.rebalancer import Rebalancer
 
 __all__ = [
     "Rebalancer",
