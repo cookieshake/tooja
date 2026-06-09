@@ -214,6 +214,7 @@ by default; adjust subscriptions at runtime with `await stream.subscribe(sym)` /
 ```python
 from decimal import Decimal
 from tooja.core import Symbol
+from tooja.core.enums import RebalanceDirection
 from tooja.portfolio.rebalance import Rebalancer, TargetWeight
 
 rb = Rebalancer(
@@ -222,13 +223,30 @@ rb = Rebalancer(
         TargetWeight(symbol=Symbol.parse("005930"), weight=Decimal("0.6")),
         TargetWeight(symbol=Symbol.parse("000660"), weight=Decimal("0.4")),
     ],
-    cash_buffer_rate=Decimal("0.02"),   # hold 2% as cash
-    min_order_value=Decimal("10000"),   # skip orders below 10,000 KRW
+    cash_buffer_rate=Decimal("0.02"),   # hold 2% of total assets as cash
+    min_order_value=Decimal("10000"),   # ignore gaps below 10,000 KRW
+    drift_band=Decimal("0.05"),         # only trade symbols >5% off target
+    step_rate=Decimal("0.5"),           # close half the gap each run
+    direction=RebalanceDirection.BOTH,  # or BUY_ONLY / SELL_ONLY
+    cash_sink=Symbol.parse("133690"),   # park surplus cash in this symbol
 )
 
-plan = await rb.compute_plan()   # -> RebalancePlan (orders, expected_drift)
-await rb.execute(plan)           # execute the orders as planned
+plan = await rb.compute_plan()   # dry run — inspect before trading
+await rb.execute(plan)           # place the planned orders
 ```
+
+`compute_plan()` returns a full `RebalancePlan` you can inspect first: the
+`orders` to place, plus the `expected_holdings`, `expected_cash`, and
+`expected_drift` they should produce once filled. The strategy knobs:
+
+- **`drift_band`** — no-trade band; leave a symbol untouched until it drifts past
+  this fraction of its target value (cuts churn from tiny gaps).
+- **`step_rate`** — fraction of each gap to close per run. `< 1.0` rebalances
+  gradually, using unbiased stochastic rounding on fractional shares so it still
+  converges over many runs.
+- **`direction`** — restrict to buys only, sells only, or both.
+- **`cash_sink`** — invest cash above the buffer into one symbol instead of
+  leaving it idle.
 
 `Rebalancer` depends only on the `Broker` ABC, so it works with any adapter.
 
