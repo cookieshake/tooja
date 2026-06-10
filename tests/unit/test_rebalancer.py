@@ -146,6 +146,15 @@ def test_rebalancer_rejects_non_positive_fill_timeout():
         )
 
 
+def test_rebalancer_rejects_non_positive_fill_poll_interval():
+    with pytest.raises(ValueError, match="fill_poll_interval"):
+        Rebalancer(
+            broker=_StubBroker(),
+            targets=[TargetWeight(symbol=Symbol(ticker="005930"), weight=Decimal("1.0"))],
+            fill_poll_interval=0.0,
+        )
+
+
 @pytest.mark.asyncio
 async def test_compute_plan_buys_to_reach_target():
     from tooja.core.enums import Currency, OrderSide
