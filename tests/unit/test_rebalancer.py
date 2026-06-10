@@ -577,6 +577,45 @@ async def test_execute_buy_only_plan_skips_sell_phase():
 
 
 @pytest.mark.asyncio
+async def test_execute_recaps_buys_with_fresh_quote():
+    """Buy price rose since planning (70k → 100k) → fewer shares fit real cash."""
+    from datetime import datetime, timezone
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, MarketOrder, Quote
+    from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
+
+    sym = Symbol(ticker="005930")
+    plan = RebalancePlan(
+        orders=[MarketOrder(symbol=sym, side=OrderSide.BUY, qty=Decimal("14"))],
+        expected_drift=Decimal("0.0"),
+        expected_holdings=[
+            ExpectedHolding(symbol=sym, qty=Decimal("14"),
+                            price=Decimal("70000"), value=Decimal("980000")),
+        ],
+        expected_cash=Money(amount=Decimal("0"), currency=Currency.KRW),
+    )
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("1000000"), currency=Currency.KRW)],
+    )
+    fresh = Quote(
+        symbol=sym,
+        price=Money(amount=Decimal("100000"), currency=Currency.KRW),  # risen
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {sym: fresh}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    rb.broker.orders = _FillTrackingOrders()
+    await rb.execute(plan)
+    # floor(1,000,000 / 100,000) = 10 shares, not the planned 14.
+    assert rb.broker.orders.received[0].qty == Decimal("10")
+
+
+@pytest.mark.asyncio
 async def test_execute_calls_orders_create():
     from tooja.core.enums import Currency
     from tooja.core.models import Balance, MarketOrder

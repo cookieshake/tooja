@@ -470,7 +470,9 @@ class Rebalancer:
         fallback = {h.symbol: h.price for h in plan.expected_holdings}
         priced: list[tuple[OrderRequest, Decimal]] = []
         for o in buys:
-            px = fallback.get(o.symbol, Decimal(0))
+            px = await self._lookup_price(o.symbol, currency)
+            if px is None or px <= 0:
+                px = fallback.get(o.symbol, Decimal(0))
             if px > 0:
                 priced.append((o, px))
         priced.sort(key=lambda x: x[0].qty * x[1], reverse=True)
