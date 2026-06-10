@@ -617,26 +617,35 @@ async def test_execute_recaps_buys_with_fresh_quote():
 
 @pytest.mark.asyncio
 async def test_execute_calls_orders_create():
-    from tooja.core.enums import Currency
+    from tooja.core.enums import Currency, OrderSide
     from tooja.core.models import Balance, MarketOrder
-    from tooja.core.enums import OrderSide
     from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
 
     sym = Symbol(ticker="005930")
     plan = RebalancePlan(
         orders=[MarketOrder(symbol=sym, side=OrderSide.BUY, qty=Decimal("10"))],
         expected_drift=Decimal("0.1"),
+        expected_holdings=[
+            ExpectedHolding(symbol=sym, qty=Decimal("10"),
+                            price=Decimal("70000"), value=Decimal("700000")),
+        ],
+        expected_cash=Money(amount=Decimal("300000"), currency=Currency.KRW),
     )
     balance = Balance(
-        total_asset=Money(amount=Decimal("0"), currency=Currency.KRW),
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("1000000"), currency=Currency.KRW)],
     )
     rb = Rebalancer(
         broker=_ScriptedBroker(balance, {}),
         targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
     )
+    rb.broker.orders = _FillTrackingOrders()
     out = await rb.execute(plan)
     assert len(out) == 1
     assert rb.broker.orders.received[0].symbol == sym
+    assert rb.broker.orders.received[0].qty == Decimal("10")
 
 
 @pytest.mark.asyncio
