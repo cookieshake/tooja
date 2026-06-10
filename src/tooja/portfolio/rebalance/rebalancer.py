@@ -20,7 +20,7 @@ from decimal import Decimal
 from typing import Iterable
 
 from tooja.core.broker import Broker
-from tooja.core.enums import Currency, OrderSide, RebalanceDirection
+from tooja.core.enums import Currency, OrderSide, OrderStatus, RebalanceDirection
 from tooja.core.models import (
     MarketOrder,
     Order,
@@ -394,11 +394,98 @@ class Rebalancer:
         return holdings, Money(amount=cash, currency=ctx.currency), drift
 
     async def execute(self, plan: RebalancePlan) -> list[Order]:
-        """Run the plan against the broker — calls broker.orders.create per order."""
+        """Phased execution: sell, confirm fills, re-read real cash, then buy.
+
+        Buy quantities in ``plan`` were sized against *estimated* cash. Prices
+        move between planning and execution, so we re-derive the buy budget from
+        the broker's real reported cash after sells settle. Long-only, market
+        orders only (see the rebalance module docstring / design spec).
+        """
+        sells = [o for o in plan.orders if o.side is OrderSide.SELL]
+        buys = [o for o in plan.orders if o.side is OrderSide.BUY]
+
         out: list[Order] = []
-        for req in plan.orders:
-            order = await self.broker.orders.create(req)
+        sell_orders = await self._submit_orders(sells, out)
+        await self._await_fills(sell_orders)
+        recapped = await self._recap_buys(plan, buys)
+        await self._submit_orders(recapped, out)
+        return out
+
+    async def _submit_orders(
+        self, reqs: list[OrderRequest], out: list[Order]
+    ) -> list[Order]:
+        """Submit each request; skip (don't abort) on individual failures.
+
+        A failed submit is dropped from the results — the subsequent cash
+        re-read reflects whatever actually executed, so the buy phase stays safe.
+        """
+        submitted: list[Order] = []
+        for req in reqs:
+            try:
+                order = await self.broker.orders.create(req)
+            except Exception:  # noqa: BLE001 — one bad order must not abort the rest
+                continue
             out.append(order)
+            submitted.append(order)
+        return submitted
+
+    async def _await_fills(self, orders: list[Order]) -> None:
+        """Poll each order until terminal status or fill_timeout elapses.
+
+        On timeout we simply return: the cash re-read in _recap_buys reflects
+        whatever filled, so under-filled sells just shrink the buy budget.
+        """
+        if not orders:
+            return
+        terminal = {OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED}
+        pending = {o.order_id for o in orders}
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        while pending and (loop.time() - start) < self.fill_timeout:
+            for oid in list(pending):
+                try:
+                    cur = await self.broker.orders.get(oid)
+                except Exception:  # noqa: BLE001 — treat unknown as still pending
+                    continue
+                if cur.status in terminal:
+                    pending.discard(oid)
+            if not pending:
+                break
+            await asyncio.sleep(self.fill_poll_interval)
+
+    async def _recap_buys(
+        self, plan: RebalancePlan, buys: list[OrderRequest]
+    ) -> list[OrderRequest]:
+        """Re-size buys against the broker's real cash, largest-notional first."""
+        if not buys:
+            return []
+        currency = plan.expected_cash.currency if plan.expected_cash else Currency.KRW
+        balance = await self.broker.account.get_balance()
+        available = next(
+            (m.amount for m in balance.cash if m.currency == currency), Decimal(0)
+        )
+        if balance.total_asset is not None:
+            available -= balance.total_asset.amount * self.cash_buffer_rate
+
+        fallback = {h.symbol: h.price for h in plan.expected_holdings}
+        priced: list[tuple[OrderRequest, Decimal]] = []
+        for o in buys:
+            px = fallback.get(o.symbol, Decimal(0))
+            if px > 0:
+                priced.append((o, px))
+        priced.sort(key=lambda x: x[0].qty * x[1], reverse=True)
+
+        out: list[OrderRequest] = []
+        for o, px in priced:
+            cost = o.qty * px
+            if cost <= available:
+                out.append(o)
+                available -= cost
+            elif available >= px:
+                affordable = (available / px).quantize(Decimal("1"), rounding="ROUND_DOWN")
+                if affordable > 0 and affordable * px >= self.min_order_value:
+                    out.append(MarketOrder(symbol=o.symbol, side=OrderSide.BUY, qty=affordable))
+                    available -= affordable * px
         return out
 
     async def _lookup_price(self, sym: Symbol, currency: Currency) -> Decimal | None:
