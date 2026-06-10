@@ -678,3 +678,49 @@ async def test_execute_proceeds_on_fill_timeout():
     assert OrderSide.SELL in sides and OrderSide.BUY in sides
     # SELL submitted before BUY.
     assert sides.index(OrderSide.SELL) < sides.index(OrderSide.BUY)
+
+
+@pytest.mark.asyncio
+async def test_execute_continues_when_a_sell_submit_fails():
+    """One SELL raises on create → it's skipped; the BUY still executes."""
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, MarketOrder
+    from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
+
+    bad_sell = Symbol(ticker="035720")
+    buy_sym = Symbol(ticker="005930")
+    plan = RebalancePlan(
+        orders=[
+            MarketOrder(symbol=bad_sell, side=OrderSide.SELL, qty=Decimal("5")),
+            MarketOrder(symbol=buy_sym, side=OrderSide.BUY, qty=Decimal("3")),
+        ],
+        expected_drift=Decimal("0.0"),
+        expected_holdings=[
+            ExpectedHolding(symbol=buy_sym, qty=Decimal("3"),
+                            price=Decimal("70000"), value=Decimal("210000")),
+        ],
+        expected_cash=Money(amount=Decimal("0"), currency=Currency.KRW),
+    )
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("500000"), currency=Currency.KRW)],
+    )
+
+    class _FlakyOrders(_FillTrackingOrders):
+        async def create(self, req):
+            if req.side is OrderSide.SELL:
+                raise RuntimeError("broker rejected sell")
+            return await super().create(req)
+
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=buy_sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    rb.broker.orders = _FlakyOrders()
+    out = await rb.execute(plan)
+    # The failed SELL is absent; the BUY went through.
+    assert all(o.side is OrderSide.BUY for o in out)
+    assert len(out) == 1
+    assert out[0].side is OrderSide.BUY
