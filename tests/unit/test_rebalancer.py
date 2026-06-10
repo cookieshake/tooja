@@ -123,6 +123,29 @@ class _ScriptedBroker(_StubBroker):
         self.orders = _ScriptedOrders()
 
 
+def test_rebalancer_accepts_fill_poll_params():
+    rb = Rebalancer(
+        broker=_StubBroker(),
+        targets=[
+            TargetWeight(symbol=Symbol(ticker="005930"), weight=Decimal("0.5")),
+            TargetWeight(symbol=Symbol(ticker="035720"), weight=Decimal("0.5")),
+        ],
+        fill_poll_interval=0.2,
+        fill_timeout=10.0,
+    )
+    assert rb.fill_poll_interval == 0.2
+    assert rb.fill_timeout == 10.0
+
+
+def test_rebalancer_rejects_non_positive_fill_timeout():
+    with pytest.raises(ValueError, match="fill_timeout"):
+        Rebalancer(
+            broker=_StubBroker(),
+            targets=[TargetWeight(symbol=Symbol(ticker="005930"), weight=Decimal("1.0"))],
+            fill_timeout=0.0,
+        )
+
+
 @pytest.mark.asyncio
 async def test_compute_plan_buys_to_reach_target():
     from tooja.core.enums import Currency, OrderSide

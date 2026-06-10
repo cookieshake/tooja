@@ -70,6 +70,8 @@ class Rebalancer:
         rng: random.Random | None = None,
         direction: RebalanceDirection = RebalanceDirection.BOTH,
         cash_sink: Symbol | None = None,
+        fill_poll_interval: float = 0.5,
+        fill_timeout: float = 30.0,
     ):
         self.broker = broker
         self.targets = list(targets)
@@ -87,6 +89,12 @@ class Rebalancer:
             raise ValueError("step_rate must be in [0, 1.0]")
         self.direction = direction
         self.cash_sink = cash_sink
+        if fill_poll_interval <= 0:
+            raise ValueError("fill_poll_interval must be positive")
+        if fill_timeout <= 0:
+            raise ValueError("fill_timeout must be positive")
+        self.fill_poll_interval = fill_poll_interval
+        self.fill_timeout = fill_timeout
         self._rng = rng if rng is not None else random.Random()
         self._validate_weights()
 
