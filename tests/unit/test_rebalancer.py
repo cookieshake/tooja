@@ -733,3 +733,112 @@ async def test_execute_continues_when_a_sell_submit_fails():
     assert all(o.side is OrderSide.BUY for o in out)
     assert len(out) == 1
     assert out[0].side is OrderSide.BUY
+
+
+@pytest.mark.asyncio
+async def test_execute_recaps_buys_in_usd():
+    """USD-denominated plan/balance: recap math must work in USD, not assume KRW."""
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, MarketOrder
+    from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
+
+    sym = Symbol(ticker="NASD:AAPL")
+    plan = RebalancePlan(
+        orders=[MarketOrder(symbol=sym, side=OrderSide.BUY, qty=Decimal("10"))],
+        expected_drift=Decimal("0.0"),
+        expected_holdings=[
+            ExpectedHolding(symbol=sym, qty=Decimal("10"),
+                            price=Decimal("200"), value=Decimal("2000")),
+        ],
+        expected_cash=Money(amount=Decimal("0"), currency=Currency.USD),
+    )
+    balance = Balance(
+        total_asset=Money(amount=Decimal("2000"), currency=Currency.USD),
+        cash=[Money(amount=Decimal("1500"), currency=Currency.USD)],  # real cash < plan
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+        min_order_value=Decimal("100"),
+    )
+    rb.broker.orders = _FillTrackingOrders()
+    out = await rb.execute(plan)
+    # floor(1500 / 200) = 7 shares
+    assert len(out) == 1
+    assert rb.broker.orders.received[0].qty == Decimal("7")
+
+
+@pytest.mark.asyncio
+async def test_recap_falls_back_to_balance_currency_when_no_expected_cash():
+    """expected_cash=None must not silently assume KRW — derive currency from
+    the balance's total_asset, mirroring _load_account."""
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, MarketOrder
+    from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
+
+    sym = Symbol(ticker="NASD:AAPL")
+    plan = RebalancePlan(
+        orders=[MarketOrder(symbol=sym, side=OrderSide.BUY, qty=Decimal("5"))],
+        expected_drift=Decimal("0.0"),
+        expected_holdings=[
+            ExpectedHolding(symbol=sym, qty=Decimal("5"),
+                            price=Decimal("200"), value=Decimal("1000")),
+        ],
+        expected_cash=None,
+    )
+    balance = Balance(
+        total_asset=Money(amount=Decimal("2000"), currency=Currency.USD),
+        cash=[Money(amount=Decimal("2000"), currency=Currency.USD)],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+        min_order_value=Decimal("100"),
+    )
+    rb.broker.orders = _FillTrackingOrders()
+    await rb.execute(plan)
+    # With a KRW fallback the USD cash entry is never found → budget 0 → buy dropped.
+    assert len(rb.broker.orders.received) == 1
+    assert rb.broker.orders.received[0].qty == Decimal("5")
+
+
+@pytest.mark.asyncio
+async def test_recap_skips_buffer_when_total_asset_currency_differs():
+    """Buffer is denominated in the plan currency; a total_asset reported in a
+    different currency must not be subtracted from the cash budget verbatim."""
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, MarketOrder
+    from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
+
+    sym = Symbol(ticker="NASD:AAPL")
+    plan = RebalancePlan(
+        orders=[MarketOrder(symbol=sym, side=OrderSide.BUY, qty=Decimal("10"))],
+        expected_drift=Decimal("0.0"),
+        expected_holdings=[
+            ExpectedHolding(symbol=sym, qty=Decimal("10"),
+                            price=Decimal("200"), value=Decimal("2000")),
+        ],
+        expected_cash=Money(amount=Decimal("0"), currency=Currency.USD),
+    )
+    # Broker reports the account total in KRW (e.g. FX-converted) but cash in USD.
+    balance = Balance(
+        total_asset=Money(amount=Decimal("2600000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("2000"), currency=Currency.USD)],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0.02"),
+        min_order_value=Decimal("100"),
+    )
+    rb.broker.orders = _FillTrackingOrders()
+    await rb.execute(plan)
+    # Subtracting 2,600,000 * 0.02 = 52,000 "KRW" from 2,000 USD would zero the
+    # budget. With the currency check the full 10-share buy fits (10*200=2000).
+    assert len(rb.broker.orders.received) == 1
+    assert rb.broker.orders.received[0].qty == Decimal("10")

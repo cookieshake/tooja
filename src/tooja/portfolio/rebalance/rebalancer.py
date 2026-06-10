@@ -6,7 +6,10 @@ generates MarketOrder requests to bring the portfolio closer to the targets.
 Drift = sum of |actual_weight - target_weight| across symbols.
 
 Constraints:
-- All Money inputs are KRW-only (Money currency must match across balance/positions).
+- Single-currency: all Money inputs (balance, positions, quotes) must share one
+  currency — KRW and USD accounts both work, mixing does not. The plan currency
+  is taken from the broker's reported total_asset. Note min_order_value's
+  default (10000) is KRW-oriented; pass an appropriate value for USD accounts.
 - An order is dropped if its notional is below `min_order_value`.
 - `cash_buffer_rate` of total assets is held aside (not invested).
 - execute() is phased: SELLs are submitted and confirmed first, then real cash
@@ -464,12 +467,20 @@ class Rebalancer:
         """Re-size buys against the broker's real cash, largest-notional first."""
         if not buys:
             return []
-        currency = plan.expected_cash.currency if plan.expected_cash else Currency.KRW
         balance = await self.broker.account.get_balance()
+        if plan.expected_cash is not None:
+            currency = plan.expected_cash.currency
+        elif balance.total_asset is not None:
+            currency = balance.total_asset.currency  # mirror _load_account
+        else:
+            currency = Currency.KRW
         available = next(
             (m.amount for m in balance.cash if m.currency == currency), Decimal(0)
         )
-        if balance.total_asset is not None:
+        # Buffer is denominated in the plan currency; skip when total_asset is
+        # reported in a different one (e.g. FX-converted account total) — the
+        # single-currency invariant normally guarantees a match.
+        if balance.total_asset is not None and balance.total_asset.currency == currency:
             available -= balance.total_asset.amount * self.cash_buffer_rate
 
         fallback = {h.symbol: h.price for h in plan.expected_holdings}
