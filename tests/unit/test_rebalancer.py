@@ -637,3 +637,44 @@ async def test_execute_calls_orders_create():
     out = await rb.execute(plan)
     assert len(out) == 1
     assert rb.broker.orders.received[0].symbol == sym
+
+
+@pytest.mark.asyncio
+async def test_execute_proceeds_on_fill_timeout():
+    """Sells never reach terminal status → execute waits fill_timeout then buys."""
+    from tooja.core.enums import Currency, OrderSide, OrderStatus
+    from tooja.core.models import Balance, MarketOrder
+    from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
+
+    sell_sym = Symbol(ticker="035720")
+    buy_sym = Symbol(ticker="005930")
+    plan = RebalancePlan(
+        orders=[
+            MarketOrder(symbol=sell_sym, side=OrderSide.SELL, qty=Decimal("5")),
+            MarketOrder(symbol=buy_sym, side=OrderSide.BUY, qty=Decimal("3")),
+        ],
+        expected_drift=Decimal("0.0"),
+        expected_holdings=[
+            ExpectedHolding(symbol=buy_sym, qty=Decimal("3"),
+                            price=Decimal("70000"), value=Decimal("210000")),
+        ],
+        expected_cash=Money(amount=Decimal("0"), currency=Currency.KRW),
+    )
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("500000"), currency=Currency.KRW)],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=buy_sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+        fill_poll_interval=0.01,
+        fill_timeout=0.05,  # never fills → times out fast
+    )
+    rb.broker.orders = _FillTrackingOrders(fill_status=OrderStatus.OPEN)  # stays non-terminal
+    out = await rb.execute(plan)
+    sides = [o.side for o in rb.broker.orders.received]
+    assert OrderSide.SELL in sides and OrderSide.BUY in sides
+    # SELL submitted before BUY.
+    assert sides.index(OrderSide.SELL) < sides.index(OrderSide.BUY)
