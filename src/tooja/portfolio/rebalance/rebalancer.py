@@ -9,6 +9,9 @@ Constraints:
 - All Money inputs are KRW-only (Money currency must match across balance/positions).
 - An order is dropped if its notional is below `min_order_value`.
 - `cash_buffer_rate` of total assets is held aside (not invested).
+- execute() is phased: SELLs are submitted and confirmed first, then real cash
+  is re-read from the broker and BUYs are re-sized against it (long-only,
+  market orders only). compute_plan() remains pure and uses estimated cash.
 """
 
 from __future__ import annotations
@@ -418,6 +421,8 @@ class Rebalancer:
 
         A failed submit is dropped from the results — the subsequent cash
         re-read reflects whatever actually executed, so the buy phase stays safe.
+        Appends to the shared cross-phase ``out`` list; returns only this
+        call's orders (used for fill-tracking).
         """
         submitted: list[Order] = []
         for req in reqs:
