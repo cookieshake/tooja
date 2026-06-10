@@ -450,12 +450,15 @@ class Rebalancer:
         loop = asyncio.get_running_loop()
         start = loop.time()
         while pending and (loop.time() - start) < self.fill_timeout:
-            for oid in list(pending):
-                try:
-                    cur = await self.broker.orders.get(oid)
-                except Exception:  # noqa: BLE001 — treat unknown as still pending
-                    continue
-                if cur.status in terminal:
+            oids = list(pending)
+            results = await asyncio.gather(
+                *(self.broker.orders.get(oid) for oid in oids),
+                return_exceptions=True,
+            )
+            for oid, res in zip(oids, results):
+                if isinstance(res, Exception):
+                    continue  # treat unknown as still pending
+                if res.status in terminal:
                     pending.discard(oid)
             if not pending:
                 break
@@ -484,9 +487,13 @@ class Rebalancer:
             available -= balance.total_asset.amount * self.cash_buffer_rate
 
         fallback = {h.symbol: h.price for h in plan.expected_holdings}
+        # Re-quote concurrently — sequential round-trips would add latency and
+        # widen the price-drift window the phasing is meant to close.
+        quotes = await asyncio.gather(
+            *(self._lookup_price(o.symbol, currency) for o in buys)
+        )
         priced: list[tuple[OrderRequest, Decimal]] = []
-        for o in buys:
-            px = await self._lookup_price(o.symbol, currency)
+        for o, px in zip(buys, quotes):
             if px is None or px <= 0:
                 px = fallback.get(o.symbol, Decimal(0))
             if px > 0:
