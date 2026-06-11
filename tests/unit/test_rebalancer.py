@@ -68,6 +68,22 @@ def test_rebalance_plan_dataclass():
     assert plan.expected_drift == Decimal("0.02")
 
 
+def test_rebalance_plan_carries_expected_total():
+    from tooja.core.enums import Currency
+    from tooja.core.money import Money
+    plan = RebalancePlan(
+        orders=[],
+        expected_drift=Decimal("0"),
+        expected_total=Money(amount=Decimal("5900"), currency=Currency.USD),
+    )
+    assert plan.expected_total == Money(amount=Decimal("5900"), currency=Currency.USD)
+
+
+def test_rebalance_plan_expected_total_defaults_none():
+    plan = RebalancePlan(orders=[], expected_drift=Decimal("0"))
+    assert plan.expected_total is None
+
+
 @pytest.mark.asyncio
 async def test_compute_plan_returns_empty_when_no_positions_and_no_quotes():
     """A stub broker exposes no balance — compute_plan should raise UnsupportedOperation."""
