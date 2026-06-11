@@ -6,9 +6,15 @@ generates MarketOrder requests to bring the portfolio closer to the targets.
 Drift = sum of |actual_weight - target_weight| across symbols.
 
 Constraints:
-- All Money inputs are KRW-only (Money currency must match across balance/positions).
+- Single-currency: all Money inputs (balance, positions, quotes) must share one
+  currency — KRW and USD accounts both work, mixing does not. The plan currency
+  is taken from the broker's reported total_asset. Note min_order_value's
+  default (10000) is KRW-oriented; pass an appropriate value for USD accounts.
 - An order is dropped if its notional is below `min_order_value`.
 - `cash_buffer_rate` of total assets is held aside (not invested).
+- execute() is phased: SELLs are submitted and confirmed first, then real cash
+  is re-read from the broker and BUYs are re-sized against it (long-only,
+  market orders only). compute_plan() remains pure and uses estimated cash.
 """
 
 from __future__ import annotations
@@ -20,7 +26,7 @@ from decimal import Decimal
 from typing import Iterable
 
 from tooja.core.broker import Broker
-from tooja.core.enums import Currency, OrderSide, RebalanceDirection
+from tooja.core.enums import Currency, OrderSide, OrderStatus, RebalanceDirection
 from tooja.core.models import (
     MarketOrder,
     Order,
@@ -70,6 +76,8 @@ class Rebalancer:
         rng: random.Random | None = None,
         direction: RebalanceDirection = RebalanceDirection.BOTH,
         cash_sink: Symbol | None = None,
+        fill_poll_interval: float = 0.5,
+        fill_timeout: float = 30.0,
     ):
         self.broker = broker
         self.targets = list(targets)
@@ -87,6 +95,12 @@ class Rebalancer:
             raise ValueError("step_rate must be in [0, 1.0]")
         self.direction = direction
         self.cash_sink = cash_sink
+        if fill_poll_interval <= 0:
+            raise ValueError("fill_poll_interval must be positive")
+        if fill_timeout <= 0:
+            raise ValueError("fill_timeout must be positive")
+        self.fill_poll_interval = fill_poll_interval
+        self.fill_timeout = fill_timeout
         self._rng = rng if rng is not None else random.Random()
         self._validate_weights()
 
@@ -386,11 +400,117 @@ class Rebalancer:
         return holdings, Money(amount=cash, currency=ctx.currency), drift
 
     async def execute(self, plan: RebalancePlan) -> list[Order]:
-        """Run the plan against the broker — calls broker.orders.create per order."""
+        """Phased execution: sell, confirm fills, re-read real cash, then buy.
+
+        Buy quantities in ``plan`` were sized against *estimated* cash. Prices
+        move between planning and execution, so we re-derive the buy budget from
+        the broker's real reported cash after sells settle. Long-only, market
+        orders only (see the rebalance module docstring / design spec).
+        """
+        sells = [o for o in plan.orders if o.side is OrderSide.SELL]
+        buys = [o for o in plan.orders if o.side is OrderSide.BUY]
+
         out: list[Order] = []
-        for req in plan.orders:
-            order = await self.broker.orders.create(req)
+        sell_orders = await self._submit_orders(sells, out)
+        await self._await_fills(sell_orders)
+        recapped = await self._recap_buys(plan, buys)
+        await self._submit_orders(recapped, out)
+        return out
+
+    async def _submit_orders(
+        self, reqs: list[OrderRequest], out: list[Order]
+    ) -> list[Order]:
+        """Submit each request; skip (don't abort) on individual failures.
+
+        A failed submit is dropped from the results — the subsequent cash
+        re-read reflects whatever actually executed, so the buy phase stays safe.
+        Appends to the shared cross-phase ``out`` list; returns only this
+        call's orders (used for fill-tracking).
+        """
+        submitted: list[Order] = []
+        for req in reqs:
+            try:
+                order = await self.broker.orders.create(req)
+            except Exception:  # noqa: BLE001 — one bad order must not abort the rest
+                continue
             out.append(order)
+            submitted.append(order)
+        return submitted
+
+    async def _await_fills(self, orders: list[Order]) -> None:
+        """Poll each order until terminal status or fill_timeout elapses.
+
+        On timeout we simply return: the cash re-read in _recap_buys reflects
+        whatever filled, so under-filled sells just shrink the buy budget.
+        """
+        if not orders:
+            return
+        terminal = {OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED}
+        pending = {o.order_id for o in orders}
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        while pending and (loop.time() - start) < self.fill_timeout:
+            oids = list(pending)
+            results = await asyncio.gather(
+                *(self.broker.orders.get(oid) for oid in oids),
+                return_exceptions=True,
+            )
+            for oid, res in zip(oids, results):
+                if isinstance(res, Exception):
+                    continue  # treat unknown as still pending
+                if res.status in terminal:
+                    pending.discard(oid)
+            if not pending:
+                break
+            await asyncio.sleep(self.fill_poll_interval)
+
+    async def _recap_buys(
+        self, plan: RebalancePlan, buys: list[OrderRequest]
+    ) -> list[OrderRequest]:
+        """Re-size buys against the broker's real cash, largest-notional first."""
+        if not buys:
+            return []
+        balance = await self.broker.account.get_balance()
+        if plan.expected_cash is not None:
+            currency = plan.expected_cash.currency
+        elif balance.total_asset is not None:
+            currency = balance.total_asset.currency  # mirror _load_account
+        else:
+            currency = Currency.KRW
+        available = next(
+            (m.amount for m in balance.cash if m.currency == currency), Decimal(0)
+        )
+        # Buffer is denominated in the plan currency; skip when total_asset is
+        # reported in a different one (e.g. FX-converted account total) — the
+        # single-currency invariant normally guarantees a match.
+        if balance.total_asset is not None and balance.total_asset.currency == currency:
+            available -= balance.total_asset.amount * self.cash_buffer_rate
+
+        fallback = {h.symbol: h.price for h in plan.expected_holdings}
+        # Re-quote concurrently — sequential round-trips would add latency and
+        # widen the price-drift window the phasing is meant to close.
+        quotes = await asyncio.gather(
+            *(self._lookup_price(o.symbol, currency) for o in buys)
+        )
+        priced: list[tuple[OrderRequest, Decimal]] = []
+        for o, px in zip(buys, quotes):
+            if px is None or px <= 0:
+                px = fallback.get(o.symbol, Decimal(0))
+            if px > 0:
+                priced.append((o, px))
+        priced.sort(key=lambda x: x[0].qty * x[1], reverse=True)
+
+        out: list[OrderRequest] = []
+        for o, px in priced:
+            cost = o.qty * px
+            if cost <= available:
+                out.append(o)
+                available -= cost
+            elif available >= px:
+                affordable = (available / px).quantize(Decimal("1"), rounding="ROUND_DOWN")
+                if affordable > 0 and affordable * px >= self.min_order_value:
+                    out.append(MarketOrder(symbol=o.symbol, side=OrderSide.BUY, qty=affordable))
+                    available -= affordable * px
         return out
 
     async def _lookup_price(self, sym: Symbol, currency: Currency) -> Decimal | None:

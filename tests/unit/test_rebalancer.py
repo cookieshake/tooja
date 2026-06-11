@@ -123,6 +123,55 @@ class _ScriptedBroker(_StubBroker):
         self.orders = _ScriptedOrders()
 
 
+class _FillTrackingOrders(_ScriptedOrders):
+    """Tracks created orders so execute()'s fill polling can resolve them."""
+    def __init__(self, fill_status=None):
+        super().__init__()
+        from tooja.core.enums import OrderStatus
+        self._fill_status = fill_status or OrderStatus.FILLED
+        self._by_id = {}
+
+    async def create(self, req):
+        order = await super().create(req)
+        self._by_id[order.order_id] = order
+        return order
+
+    async def get(self, order_id):
+        return self._by_id[order_id].model_copy(update={"status": self._fill_status})
+
+
+def test_rebalancer_accepts_fill_poll_params():
+    rb = Rebalancer(
+        broker=_StubBroker(),
+        targets=[
+            TargetWeight(symbol=Symbol(ticker="005930"), weight=Decimal("0.5")),
+            TargetWeight(symbol=Symbol(ticker="035720"), weight=Decimal("0.5")),
+        ],
+        fill_poll_interval=0.2,
+        fill_timeout=10.0,
+    )
+    assert rb.fill_poll_interval == 0.2
+    assert rb.fill_timeout == 10.0
+
+
+def test_rebalancer_rejects_non_positive_fill_timeout():
+    with pytest.raises(ValueError, match="fill_timeout"):
+        Rebalancer(
+            broker=_StubBroker(),
+            targets=[TargetWeight(symbol=Symbol(ticker="005930"), weight=Decimal("1.0"))],
+            fill_timeout=0.0,
+        )
+
+
+def test_rebalancer_rejects_non_positive_fill_poll_interval():
+    with pytest.raises(ValueError, match="fill_poll_interval"):
+        Rebalancer(
+            broker=_StubBroker(),
+            targets=[TargetWeight(symbol=Symbol(ticker="005930"), weight=Decimal("1.0"))],
+            fill_poll_interval=0.0,
+        )
+
+
 @pytest.mark.asyncio
 async def test_compute_plan_buys_to_reach_target():
     from tooja.core.enums import Currency, OrderSide
@@ -459,24 +508,337 @@ async def test_plan_sells_before_buys():
 
 
 @pytest.mark.asyncio
-async def test_execute_calls_orders_create():
-    from tooja.core.enums import Currency
+async def test_execute_recaps_buys_to_real_cash():
+    """Plan assumed ~980k cash; real cash is only 500k → buy shrinks to what fits."""
+    from tooja.core.enums import Currency, OrderSide
     from tooja.core.models import Balance, MarketOrder
-    from tooja.core.enums import OrderSide
     from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
+
+    sym = Symbol(ticker="005930")
+    plan = RebalancePlan(
+        orders=[MarketOrder(symbol=sym, side=OrderSide.BUY, qty=Decimal("14"))],
+        expected_drift=Decimal("0.02"),
+        expected_holdings=[
+            ExpectedHolding(symbol=sym, qty=Decimal("14"),
+                            price=Decimal("70000"), value=Decimal("980000")),
+        ],
+        expected_cash=Money(amount=Decimal("20000"), currency=Currency.KRW),
+    )
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("500000"), currency=Currency.KRW)],  # real cash < plan
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    rb.broker.orders = _FillTrackingOrders()
+    out = await rb.execute(plan)
+    # floor(500000 / 70000) = 7 shares
+    assert len(out) == 1
+    submitted = rb.broker.orders.received
+    assert submitted[0].side is OrderSide.BUY
+    assert submitted[0].qty == Decimal("7")
+
+
+@pytest.mark.asyncio
+async def test_execute_buy_only_plan_skips_sell_phase():
+    """No SELLs → go straight to cash re-read + buys; full buy fits."""
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, MarketOrder
+    from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
+
+    sym = Symbol(ticker="005930")
+    plan = RebalancePlan(
+        orders=[MarketOrder(symbol=sym, side=OrderSide.BUY, qty=Decimal("10"))],
+        expected_drift=Decimal("0.0"),
+        expected_holdings=[
+            ExpectedHolding(symbol=sym, qty=Decimal("10"),
+                            price=Decimal("70000"), value=Decimal("700000")),
+        ],
+        expected_cash=Money(amount=Decimal("300000"), currency=Currency.KRW),
+    )
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("1000000"), currency=Currency.KRW)],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    rb.broker.orders = _FillTrackingOrders()
+    out = await rb.execute(plan)
+    assert len(out) == 1
+    assert rb.broker.orders.received[0].qty == Decimal("10")
+
+
+@pytest.mark.asyncio
+async def test_execute_recaps_buys_with_fresh_quote():
+    """Buy price rose since planning (70k → 100k) → fewer shares fit real cash."""
+    from datetime import datetime, timezone
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, MarketOrder, Quote
+    from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
+
+    sym = Symbol(ticker="005930")
+    plan = RebalancePlan(
+        orders=[MarketOrder(symbol=sym, side=OrderSide.BUY, qty=Decimal("14"))],
+        expected_drift=Decimal("0.0"),
+        expected_holdings=[
+            ExpectedHolding(symbol=sym, qty=Decimal("14"),
+                            price=Decimal("70000"), value=Decimal("980000")),
+        ],
+        expected_cash=Money(amount=Decimal("0"), currency=Currency.KRW),
+    )
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("1000000"), currency=Currency.KRW)],
+    )
+    fresh = Quote(
+        symbol=sym,
+        price=Money(amount=Decimal("100000"), currency=Currency.KRW),  # risen
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {sym: fresh}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    rb.broker.orders = _FillTrackingOrders()
+    await rb.execute(plan)
+    # floor(1,000,000 / 100,000) = 10 shares, not the planned 14.
+    assert rb.broker.orders.received[0].qty == Decimal("10")
+
+
+@pytest.mark.asyncio
+async def test_execute_calls_orders_create():
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, MarketOrder
+    from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
 
     sym = Symbol(ticker="005930")
     plan = RebalancePlan(
         orders=[MarketOrder(symbol=sym, side=OrderSide.BUY, qty=Decimal("10"))],
         expected_drift=Decimal("0.1"),
+        expected_holdings=[
+            ExpectedHolding(symbol=sym, qty=Decimal("10"),
+                            price=Decimal("70000"), value=Decimal("700000")),
+        ],
+        expected_cash=Money(amount=Decimal("300000"), currency=Currency.KRW),
     )
     balance = Balance(
-        total_asset=Money(amount=Decimal("0"), currency=Currency.KRW),
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("1000000"), currency=Currency.KRW)],
     )
     rb = Rebalancer(
         broker=_ScriptedBroker(balance, {}),
         targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
     )
+    rb.broker.orders = _FillTrackingOrders()
     out = await rb.execute(plan)
     assert len(out) == 1
     assert rb.broker.orders.received[0].symbol == sym
+    assert rb.broker.orders.received[0].qty == Decimal("10")
+
+
+@pytest.mark.asyncio
+async def test_execute_proceeds_on_fill_timeout():
+    """Sells never reach terminal status → execute waits fill_timeout then buys."""
+    from tooja.core.enums import Currency, OrderSide, OrderStatus
+    from tooja.core.models import Balance, MarketOrder
+    from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
+
+    sell_sym = Symbol(ticker="035720")
+    buy_sym = Symbol(ticker="005930")
+    plan = RebalancePlan(
+        orders=[
+            MarketOrder(symbol=sell_sym, side=OrderSide.SELL, qty=Decimal("5")),
+            MarketOrder(symbol=buy_sym, side=OrderSide.BUY, qty=Decimal("3")),
+        ],
+        expected_drift=Decimal("0.0"),
+        expected_holdings=[
+            ExpectedHolding(symbol=buy_sym, qty=Decimal("3"),
+                            price=Decimal("70000"), value=Decimal("210000")),
+        ],
+        expected_cash=Money(amount=Decimal("0"), currency=Currency.KRW),
+    )
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("500000"), currency=Currency.KRW)],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=buy_sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+        fill_poll_interval=0.01,
+        fill_timeout=0.05,  # never fills → times out fast
+    )
+    rb.broker.orders = _FillTrackingOrders(fill_status=OrderStatus.OPEN)  # stays non-terminal
+    out = await rb.execute(plan)
+    sides = [o.side for o in rb.broker.orders.received]
+    assert OrderSide.SELL in sides and OrderSide.BUY in sides
+    # SELL submitted before BUY.
+    assert sides.index(OrderSide.SELL) < sides.index(OrderSide.BUY)
+
+
+@pytest.mark.asyncio
+async def test_execute_continues_when_a_sell_submit_fails():
+    """One SELL raises on create → it's skipped; the BUY still executes."""
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, MarketOrder
+    from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
+
+    bad_sell = Symbol(ticker="035720")
+    buy_sym = Symbol(ticker="005930")
+    plan = RebalancePlan(
+        orders=[
+            MarketOrder(symbol=bad_sell, side=OrderSide.SELL, qty=Decimal("5")),
+            MarketOrder(symbol=buy_sym, side=OrderSide.BUY, qty=Decimal("3")),
+        ],
+        expected_drift=Decimal("0.0"),
+        expected_holdings=[
+            ExpectedHolding(symbol=buy_sym, qty=Decimal("3"),
+                            price=Decimal("70000"), value=Decimal("210000")),
+        ],
+        expected_cash=Money(amount=Decimal("0"), currency=Currency.KRW),
+    )
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("500000"), currency=Currency.KRW)],
+    )
+
+    class _FlakyOrders(_FillTrackingOrders):
+        async def create(self, req):
+            if req.side is OrderSide.SELL:
+                raise RuntimeError("broker rejected sell")
+            return await super().create(req)
+
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=buy_sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    rb.broker.orders = _FlakyOrders()
+    out = await rb.execute(plan)
+    # The failed SELL is absent; the BUY went through.
+    assert all(o.side is OrderSide.BUY for o in out)
+    assert len(out) == 1
+    assert out[0].side is OrderSide.BUY
+
+
+@pytest.mark.asyncio
+async def test_execute_recaps_buys_in_usd():
+    """USD-denominated plan/balance: recap math must work in USD, not assume KRW."""
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, MarketOrder
+    from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
+
+    sym = Symbol(ticker="NASD:AAPL")
+    plan = RebalancePlan(
+        orders=[MarketOrder(symbol=sym, side=OrderSide.BUY, qty=Decimal("10"))],
+        expected_drift=Decimal("0.0"),
+        expected_holdings=[
+            ExpectedHolding(symbol=sym, qty=Decimal("10"),
+                            price=Decimal("200"), value=Decimal("2000")),
+        ],
+        expected_cash=Money(amount=Decimal("0"), currency=Currency.USD),
+    )
+    balance = Balance(
+        total_asset=Money(amount=Decimal("2000"), currency=Currency.USD),
+        cash=[Money(amount=Decimal("1500"), currency=Currency.USD)],  # real cash < plan
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+        min_order_value=Decimal("100"),
+    )
+    rb.broker.orders = _FillTrackingOrders()
+    out = await rb.execute(plan)
+    # floor(1500 / 200) = 7 shares
+    assert len(out) == 1
+    assert rb.broker.orders.received[0].qty == Decimal("7")
+
+
+@pytest.mark.asyncio
+async def test_recap_falls_back_to_balance_currency_when_no_expected_cash():
+    """expected_cash=None must not silently assume KRW — derive currency from
+    the balance's total_asset, mirroring _load_account."""
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, MarketOrder
+    from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
+
+    sym = Symbol(ticker="NASD:AAPL")
+    plan = RebalancePlan(
+        orders=[MarketOrder(symbol=sym, side=OrderSide.BUY, qty=Decimal("5"))],
+        expected_drift=Decimal("0.0"),
+        expected_holdings=[
+            ExpectedHolding(symbol=sym, qty=Decimal("5"),
+                            price=Decimal("200"), value=Decimal("1000")),
+        ],
+        expected_cash=None,
+    )
+    balance = Balance(
+        total_asset=Money(amount=Decimal("2000"), currency=Currency.USD),
+        cash=[Money(amount=Decimal("2000"), currency=Currency.USD)],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+        min_order_value=Decimal("100"),
+    )
+    rb.broker.orders = _FillTrackingOrders()
+    await rb.execute(plan)
+    # With a KRW fallback the USD cash entry is never found → budget 0 → buy dropped.
+    assert len(rb.broker.orders.received) == 1
+    assert rb.broker.orders.received[0].qty == Decimal("5")
+
+
+@pytest.mark.asyncio
+async def test_recap_skips_buffer_when_total_asset_currency_differs():
+    """Buffer is denominated in the plan currency; a total_asset reported in a
+    different currency must not be subtracted from the cash budget verbatim."""
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, MarketOrder
+    from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
+
+    sym = Symbol(ticker="NASD:AAPL")
+    plan = RebalancePlan(
+        orders=[MarketOrder(symbol=sym, side=OrderSide.BUY, qty=Decimal("10"))],
+        expected_drift=Decimal("0.0"),
+        expected_holdings=[
+            ExpectedHolding(symbol=sym, qty=Decimal("10"),
+                            price=Decimal("200"), value=Decimal("2000")),
+        ],
+        expected_cash=Money(amount=Decimal("0"), currency=Currency.USD),
+    )
+    # Broker reports the account total in KRW (e.g. FX-converted) but cash in USD.
+    balance = Balance(
+        total_asset=Money(amount=Decimal("2600000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("2000"), currency=Currency.USD)],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0.02"),
+        min_order_value=Decimal("100"),
+    )
+    rb.broker.orders = _FillTrackingOrders()
+    await rb.execute(plan)
+    # Subtracting 2,600,000 * 0.02 = 52,000 "KRW" from 2,000 USD would zero the
+    # budget. With the currency check the full 10-share buy fits (10*200=2000).
+    assert len(rb.broker.orders.received) == 1
+    assert rb.broker.orders.received[0].qty == Decimal("10")
