@@ -959,7 +959,12 @@ def fill_from_daily_ccld_row(item: Any, raw_row: dict[str, Any]) -> "Fill | None
 
 
 def _money_ccy(amount: Any, currency_code: str | None) -> Money | None:
-    """Foreign-currency Money from a KIS string amount + currency code."""
+    """Foreign-currency Money from a KIS string amount + currency code.
+
+    Returns None when the amount is absent — used for *optional* fields
+    (current_price, market_value, pnl). Required fields validate the currency
+    via `_require_currency` instead, which raises on an unmapped code.
+    """
     amt = _dec(amount)
     if amt is None or not currency_code:
         return None
@@ -970,9 +975,33 @@ def _money_ccy(amount: Any, currency_code: str | None) -> Money | None:
     return Money(amount=amt, currency=ccy)
 
 
+def _require_currency(currency_code: str | None, *, context: str) -> Currency:
+    """Resolve a KIS currency code, raising loudly on an unmapped/missing one.
+
+    A silently-dropped cash or position row vanishes from both the sleeve total
+    and the held-quantity map, which makes the rebalancer re-buy something it
+    already owns. So unmapped currencies fail rather than degrade — mirroring
+    `currency_of`'s KeyError philosophy.
+    """
+    try:
+        return Currency(currency_code)  # Currency(None) also raises ValueError
+    except ValueError as e:
+        raise ValueError(
+            f"KIS overseas {context} has unmapped currency code {currency_code!r}"
+        ) from e
+
+
 def position_from_present_balance_row(item: Any) -> Position | None:
-    """One overseas present-balance output1 row -> Position (foreign currency)."""
-    qty = _dec(getattr(item, "cblc_qty13", None))
+    """One overseas present-balance output1 row -> Position (foreign currency).
+
+    Quantity is execution-basis (`ccld_qty_smtl1`, 체결기준 현재 보유수량) so
+    same-day fills/sells are reflected; this prevents a same-day rebalance re-run
+    from re-buying a holding still inside the T+1 settlement window. Falls back to
+    the settlement-basis `cblc_qty13` only when the execution field is absent.
+    """
+    qty = _dec(getattr(item, "ccld_qty_smtl1", None))
+    if qty is None:
+        qty = _dec(getattr(item, "cblc_qty13", None))
     if qty is None or qty == 0:
         return None
     ticker = getattr(item, "pdno", None)
@@ -982,15 +1011,21 @@ def position_from_present_balance_row(item: Any) -> Position | None:
         return None
     try:
         exchange = Exchange(excg)
-    except ValueError:
-        return None  # unmapped exchange code -> skip this position
-    avg = _money_ccy(getattr(item, "avg_unpr3", None), ccy)
-    if avg is None:
-        return None
+    except ValueError as e:
+        # Unmapped exchange code: raise rather than silently drop a held position.
+        raise ValueError(
+            f"KIS overseas position {ticker} has unmapped exchange code {excg!r}"
+        ) from e
+    currency = _require_currency(ccy, context=f"position {ticker}")
+    avg_amt = _dec(getattr(item, "avg_unpr3", None))
+    if avg_amt is None:
+        raise ValueError(
+            f"KIS overseas position {ticker} (qty {qty}) has no average price"
+        )
     return Position(
         symbol=Symbol(ticker=ticker, exchange=exchange),
         qty=qty,
-        avg_price=avg,
+        avg_price=Money(amount=avg_amt, currency=currency),
         current_price=_money_ccy(getattr(item, "ovrs_now_pric1", None), ccy),
         market_value=_money_ccy(getattr(item, "frcr_evlu_amt2", None), ccy),
         pnl=_money_ccy(getattr(item, "evlu_pfls_amt2", None), ccy),
@@ -1007,12 +1042,15 @@ def balance_from_present_balance(resp: Any) -> Balance:
     """
     cash: list[Money] = []
     for row in getattr(resp, "output2", None) or []:
+        amt = _dec(getattr(row, "frcr_dncl_amt_2", None))
+        if amt is None:
+            continue  # blank filler row with no deposit amount
         # A zero foreign deposit is a meaningful state (a held currency with no
         # spendable cash), so zero-amount rows are kept — unlike zero-qty
-        # positions, which are dropped.
-        m = _money_ccy(getattr(row, "frcr_dncl_amt_2", None), getattr(row, "crcy_cd", None))
-        if m is not None:
-            cash.append(m)
+        # positions, which are dropped. An unmapped currency raises rather than
+        # silently dropping real cash.
+        ccy = _require_currency(getattr(row, "crcy_cd", None), context="cash row")
+        cash.append(Money(amount=amt, currency=ccy))
     positions = [
         p
         for p in (position_from_present_balance_row(r) for r in (getattr(resp, "output1", None) or []))

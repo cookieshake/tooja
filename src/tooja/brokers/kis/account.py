@@ -32,7 +32,7 @@ from tooja.brokers.kis.raw.domestic_stock_trading.inquire_psbl_sell import (
 )
 from tooja.core.clients import AccountClient
 from tooja.core.enums import Currency
-from tooja.core.errors import UnsupportedOperation
+from tooja.core.errors import PermissionDenied, UnsupportedOperation
 from tooja.core.models import Balance, Position, Symbol
 from tooja.core.money import Money
 
@@ -75,7 +75,15 @@ class KisAccountClient(AccountClient):
             TR_MKET_CD="00",         # 전체 시장
             INQR_DVSN_CD="00",       # 전체
         )
-        resp = await call(self._broker, InquirePresentBalanceExecutor, req)
+        try:
+            resp = await call(self._broker, InquirePresentBalanceExecutor, req)
+        except PermissionDenied:
+            # The overseas-stock service is not enrolled on this account. That is
+            # a permanent account-config state, not a transient outage, so we
+            # degrade to a domestic-only balance instead of failing get_balance
+            # outright (which would break pure-KRW callers). Every OTHER failure
+            # still propagates — see the comment in get_balance.
+            return Balance(raw={"overseas_skipped": "permission_denied"})
         return balance_from_present_balance(resp)
 
     async def get_positions(self) -> list[Position]:

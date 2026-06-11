@@ -40,10 +40,15 @@ class TossAccountClient(AccountClient):
 
     async def get_balance(self) -> Balance:
         resp = await call(self._broker, GetHoldingsExecutor)
-        currencies = {
+        # Query every currency Toss supports, not just the ones with holdings:
+        # USD cash held with no US position (just exchanged, or fully exited a
+        # US sleeve) must still surface, otherwise a USD-sleeve rebalancer reads
+        # zero cash and can never bootstrap. Union in any holdings currency so a
+        # future third currency is picked up automatically.
+        currencies = {Currency.KRW, Currency.USD}
+        currencies.update(
             to_currency(i.currency) for i in resp.items if i.currency is not None
-        }
-        currencies.add(Currency.KRW)  # KRW deposit is always relevant
+        )
         cash = await asyncio.gather(
             *(self.get_buying_power(currency=c) for c in currencies)
         )

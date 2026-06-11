@@ -200,7 +200,8 @@ def test_present_balance_response_parses_item_rows():
     resp = InquirePresentBalanceResponse.model_validate({
         "rt_cd": "0", "msg_cd": "X", "msg1": "ok",
         "output1": [{"pdno": "AAPL", "ovrs_excg_cd": "NASD", "buy_crcy_cd": "USD",
-                     "cblc_qty13": "10", "avg_unpr3": "150", "ovrs_now_pric1": "200",
+                     "ccld_qty_smtl1": "12", "cblc_qty13": "10",
+                     "avg_unpr3": "150", "ovrs_now_pric1": "200",
                      "frcr_evlu_amt2": "2000", "evlu_pfls_amt2": "500", "evlu_pfls_rt1": "33.3"}],
         "output2": [{"crcy_cd": "USD", "frcr_dncl_amt_2": "2000"}],
         "output3": {"tot_asst_amt": "5000000"},
@@ -218,7 +219,8 @@ def _present_balance_resp():
     return InquirePresentBalanceResponse.model_validate({
         "rt_cd": "0", "msg_cd": "X", "msg1": "ok",
         "output1": [{"pdno": "AAPL", "ovrs_excg_cd": "NASD", "buy_crcy_cd": "USD",
-                     "cblc_qty13": "10", "avg_unpr3": "150", "ovrs_now_pric1": "200",
+                     "ccld_qty_smtl1": "12", "cblc_qty13": "10",
+                     "avg_unpr3": "150", "ovrs_now_pric1": "200",
                      "frcr_evlu_amt2": "2000", "evlu_pfls_amt2": "500", "evlu_pfls_rt1": "33.3"}],
         "output2": [{"crcy_cd": "USD", "frcr_dncl_amt_2": "2000"},
                     {"crcy_cd": "HKD", "frcr_dncl_amt_2": "0"}],
@@ -239,12 +241,28 @@ def test_balance_from_present_balance_maps_cash_positions_total():
     assert pos.symbol.ticker == "AAPL"
     assert pos.symbol.exchange == Exchange.NASD
     assert pos.avg_price.currency == Currency.USD
-    assert pos.qty == Decimal("10")
+    # Execution-basis (ccld_qty_smtl1=12) wins over settlement-basis (cblc_qty13=10).
+    assert pos.qty == Decimal("12")
     assert bal.total_asset.amount == Decimal("5000000")
     assert bal.total_asset.currency == Currency.KRW
 
 
-def test_balance_from_present_balance_skips_unmapped_exchange():
+def test_present_balance_qty_falls_back_to_cblc_when_ccld_absent():
+    from decimal import Decimal
+    from tooja.brokers.kis._mappers import position_from_present_balance_row
+    from tooja.brokers.kis.raw.overseas_stock_trading.inquire_present_balance import (
+        InquirePresentBalanceResponse_Output1Item,
+    )
+    item = InquirePresentBalanceResponse_Output1Item.model_validate(
+        {"pdno": "AAPL", "ovrs_excg_cd": "NASD", "buy_crcy_cd": "USD",
+         "cblc_qty13": "7", "avg_unpr3": "150"}  # no ccld_qty_smtl1
+    )
+    pos = position_from_present_balance_row(item)
+    assert pos.qty == Decimal("7")
+
+
+def test_balance_from_present_balance_raises_on_unmapped_exchange():
+    import pytest
     from tooja.brokers.kis._mappers import balance_from_present_balance
     from tooja.brokers.kis.raw.overseas_stock_trading.inquire_present_balance import (
         InquirePresentBalanceResponse,
@@ -252,11 +270,28 @@ def test_balance_from_present_balance_skips_unmapped_exchange():
     resp = InquirePresentBalanceResponse.model_validate({
         "rt_cd": "0", "msg_cd": "X", "msg1": "ok",
         "output1": [{"pdno": "ZZZ", "ovrs_excg_cd": "XXXX", "buy_crcy_cd": "USD",
-                     "cblc_qty13": "5", "avg_unpr3": "10"}],
+                     "ccld_qty_smtl1": "5", "avg_unpr3": "10"}],
         "output2": [], "output3": {"tot_asst_amt": "0"},
     })
-    bal = balance_from_present_balance(resp)
-    assert bal.positions == []  # unmapped exchange skipped, no crash
+    # A held position on an unmapped exchange must NOT vanish silently.
+    with pytest.raises(ValueError, match="unmapped exchange code"):
+        balance_from_present_balance(resp)
+
+
+def test_balance_from_present_balance_raises_on_unmapped_cash_currency():
+    import pytest
+    from tooja.brokers.kis._mappers import balance_from_present_balance
+    from tooja.brokers.kis.raw.overseas_stock_trading.inquire_present_balance import (
+        InquirePresentBalanceResponse,
+    )
+    resp = InquirePresentBalanceResponse.model_validate({
+        "rt_cd": "0", "msg_cd": "X", "msg1": "ok",
+        "output1": [],
+        "output2": [{"crcy_cd": "ZZZ", "frcr_dncl_amt_2": "100"}],
+        "output3": {"tot_asst_amt": "0"},
+    })
+    with pytest.raises(ValueError, match="unmapped currency code"):
+        balance_from_present_balance(resp)
 
 
 def test_merge_balances_concats_and_sums_total():

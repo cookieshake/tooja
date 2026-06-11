@@ -107,7 +107,9 @@ async def test_get_balance_total_asset_is_krw_money(monkeypatch):
     assert captured["executor_cls"] is GetHoldingsExecutor
     assert captured["query"] is None
     assert balance.total_asset == Money(amount=Decimal("720000"), currency=Currency.KRW)
-    assert len(balance.cash) == 1  # holdings item is KRW-denominated → one buying-power call
+    # KRW + USD are always queried (Toss's supported currencies), so foreign cash
+    # surfaces even with no foreign holdings.
+    assert {m.currency for m in balance.cash} == {Currency.KRW, Currency.USD}
     assert len(balance.positions) == 1
 
 
@@ -150,9 +152,8 @@ async def test_get_balance_no_items_empty_positions(monkeypatch):
     balance = await _client().get_balance()
 
     assert balance.positions == []
-    # KRW buying power is always fetched even with no positions
-    assert len(balance.cash) == 1
-    assert balance.cash[0].currency == Currency.KRW
+    # KRW + USD buying power is always fetched even with no positions
+    assert {m.currency for m in balance.cash} == {Currency.KRW, Currency.USD}
 
 
 @pytest.mark.asyncio
@@ -213,6 +214,29 @@ async def test_get_balance_cash_populated_per_currency(monkeypatch):
     assert cash_by_currency[Currency.KRW] == Decimal("500000")
     assert cash_by_currency[Currency.USD] == Decimal("1234.56")
     assert len(balance.cash) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_balance_surfaces_usd_cash_without_usd_holdings(monkeypatch):
+    """USD cash must surface even when no US position exists (sleeve bootstrap)."""
+    buying_powers = {"KRW": Decimal("0"), "USD": Decimal("3000")}
+
+    async def fake_call(broker, executor_cls, *, path_params=None, query=None,
+                        body=None, extra_headers=None):
+        if executor_cls is GetHoldingsExecutor:
+            # KRW-only holdings — no USD position at all.
+            return HoldingsOverview.model_validate(_HOLDINGS_OVERVIEW_WIRE)
+        return BuyingPowerResponse.model_validate({
+            "currency": query["currency"],
+            "cashBuyingPower": str(buying_powers[query["currency"]]),
+        })
+
+    monkeypatch.setattr(account_mod, "call", fake_call)
+
+    balance = await _client().get_balance()
+
+    cash_by_currency = {m.currency: m.amount for m in balance.cash}
+    assert cash_by_currency[Currency.USD] == Decimal("3000")
 
 
 # ---------------------------------------------------------------------------
