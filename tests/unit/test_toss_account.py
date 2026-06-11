@@ -90,9 +90,15 @@ async def test_get_balance_total_asset_is_krw_money(monkeypatch):
 
     async def fake_call(broker, executor_cls, *, path_params=None, query=None,
                         body=None, extra_headers=None):
-        captured["executor_cls"] = executor_cls
-        captured["query"] = query
-        return HoldingsOverview.model_validate(_HOLDINGS_OVERVIEW_WIRE)
+        if executor_cls is GetHoldingsExecutor:
+            captured["executor_cls"] = executor_cls
+            captured["query"] = query
+            return HoldingsOverview.model_validate(_HOLDINGS_OVERVIEW_WIRE)
+        # GetBuyingPowerExecutor
+        return BuyingPowerResponse.model_validate({
+            "currency": query["currency"],
+            "cashBuyingPower": "0",
+        })
 
     monkeypatch.setattr(account_mod, "call", fake_call)
 
@@ -101,7 +107,7 @@ async def test_get_balance_total_asset_is_krw_money(monkeypatch):
     assert captured["executor_cls"] is GetHoldingsExecutor
     assert captured["query"] is None
     assert balance.total_asset == Money(amount=Decimal("720000"), currency=Currency.KRW)
-    assert balance.cash == []
+    assert len(balance.cash) == 1  # holdings item is KRW-denominated → one buying-power call
     assert len(balance.positions) == 1
 
 
@@ -109,7 +115,12 @@ async def test_get_balance_total_asset_is_krw_money(monkeypatch):
 async def test_get_balance_position_symbol_and_qty(monkeypatch):
     async def fake_call(broker, executor_cls, *, path_params=None, query=None,
                         body=None, extra_headers=None):
-        return HoldingsOverview.model_validate(_HOLDINGS_OVERVIEW_WIRE)
+        if executor_cls is GetHoldingsExecutor:
+            return HoldingsOverview.model_validate(_HOLDINGS_OVERVIEW_WIRE)
+        return BuyingPowerResponse.model_validate({
+            "currency": query["currency"],
+            "cashBuyingPower": "0",
+        })
 
     monkeypatch.setattr(account_mod, "call", fake_call)
 
@@ -127,14 +138,81 @@ async def test_get_balance_no_items_empty_positions(monkeypatch):
 
     async def fake_call(broker, executor_cls, *, path_params=None, query=None,
                         body=None, extra_headers=None):
-        return HoldingsOverview.model_validate(wire)
+        if executor_cls is GetHoldingsExecutor:
+            return HoldingsOverview.model_validate(wire)
+        return BuyingPowerResponse.model_validate({
+            "currency": query["currency"],
+            "cashBuyingPower": "0",
+        })
 
     monkeypatch.setattr(account_mod, "call", fake_call)
 
     balance = await _client().get_balance()
 
     assert balance.positions == []
-    assert balance.cash == []
+    # KRW buying power is always fetched even with no positions
+    assert len(balance.cash) == 1
+    assert balance.cash[0].currency == Currency.KRW
+
+
+@pytest.mark.asyncio
+async def test_get_balance_cash_populated_per_currency(monkeypatch):
+    """get_balance() should fetch buying-power for each currency in holdings + KRW."""
+    _USD_HOLDING_ITEM_WIRE = {
+        "symbol": "AAPL",
+        "name": "Apple Inc.",
+        "marketCountry": "US",
+        "currency": "USD",
+        "quantity": "5",
+        "lastPrice": "200.00",
+        "averagePurchasePrice": "190.00",
+        "marketValue": {
+            "purchaseAmount": "950.00",
+            "amount": "1000.00",
+        },
+        "profitLoss": {
+            "amount": "50.00",
+            "rate": "0.0526",
+        },
+        "dailyProfitLoss": {
+            "amount": "10.00",
+            "rate": "0.01",
+        },
+        "cost": {
+            "tax": "0",
+            "commission": "0",
+            "totalCost": "0",
+        },
+    }
+    wire_with_usd = dict(
+        _HOLDINGS_OVERVIEW_WIRE,
+        items=[_HOLDING_ITEM_WIRE, _USD_HOLDING_ITEM_WIRE],
+    )
+
+    buying_powers = {
+        "KRW": Decimal("500000"),
+        "USD": Decimal("1234.56"),
+    }
+
+    async def fake_call(broker, executor_cls, *, path_params=None, query=None,
+                        body=None, extra_headers=None):
+        if executor_cls is GetHoldingsExecutor:
+            return HoldingsOverview.model_validate(wire_with_usd)
+        # GetBuyingPowerExecutor
+        currency_str = query["currency"]
+        return BuyingPowerResponse.model_validate({
+            "currency": currency_str,
+            "cashBuyingPower": str(buying_powers[currency_str]),
+        })
+
+    monkeypatch.setattr(account_mod, "call", fake_call)
+
+    balance = await _client().get_balance()
+
+    cash_by_currency = {m.currency: m.amount for m in balance.cash}
+    assert cash_by_currency[Currency.KRW] == Decimal("500000")
+    assert cash_by_currency[Currency.USD] == Decimal("1234.56")
+    assert len(balance.cash) == 2
 
 
 # ---------------------------------------------------------------------------

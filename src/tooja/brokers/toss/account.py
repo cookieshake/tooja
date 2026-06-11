@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from tooja.brokers.toss._call import call
-from tooja.brokers.toss._mappers import balance_from_holdings, position_from_holding
+from tooja.brokers.toss._mappers import balance_from_holdings, position_from_holding, to_currency
 from tooja.brokers.toss.raw.asset.get_holdings import GetHoldingsExecutor
 from tooja.brokers.toss.raw.order_info.get_buying_power import GetBuyingPowerExecutor
 from tooja.brokers.toss.raw.order_info.get_sellable_quantity import GetSellableQuantityExecutor
@@ -39,7 +40,14 @@ class TossAccountClient(AccountClient):
 
     async def get_balance(self) -> Balance:
         resp = await call(self._broker, GetHoldingsExecutor)
-        return balance_from_holdings(resp)
+        currencies = {
+            to_currency(i.currency) for i in resp.items if i.currency is not None
+        }
+        currencies.add(Currency.KRW)  # KRW deposit is always relevant
+        cash = await asyncio.gather(
+            *(self.get_buying_power(currency=c) for c in currencies)
+        )
+        return balance_from_holdings(resp, cash=list(cash))
 
     # ------------------------------------------------------------------
     # get_positions

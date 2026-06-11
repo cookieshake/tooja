@@ -265,6 +265,16 @@ def test_balance_total_asset_none_when_krw_missing():
     assert bal.total_asset is None
 
 
+def test_balance_from_holdings_accepts_cash():
+    o = HoldingsOverview.model_validate(_holdings_payload())
+    cash = [
+        Money(amount=Decimal("500000"), currency=Currency.KRW),
+        Money(amount=Decimal("2000"), currency=Currency.USD),
+    ]
+    bal = m.balance_from_holdings(o, cash=cash)
+    assert bal.cash == cash
+
+
 # ─── orders ──────────────────────────────────────────────
 
 
