@@ -191,3 +191,21 @@ def test_quote_from_ws_record():
     assert q is not None
     assert q.price.amount == Decimal("70000")
     assert q.symbol.ticker == "005930"
+
+
+def test_present_balance_response_parses_item_rows():
+    from tooja.brokers.kis.raw.overseas_stock_trading.inquire_present_balance import (
+        InquirePresentBalanceResponse,
+    )
+    resp = InquirePresentBalanceResponse.model_validate({
+        "rt_cd": "0", "msg_cd": "X", "msg1": "ok",
+        "output1": [{"pdno": "AAPL", "ovrs_excg_cd": "NASD", "buy_crcy_cd": "USD",
+                     "cblc_qty13": "10", "avg_unpr3": "150", "ovrs_now_pric1": "200",
+                     "frcr_evlu_amt2": "2000", "evlu_pfls_amt2": "500", "evlu_pfls_rt1": "33.3"}],
+        "output2": [{"crcy_cd": "USD", "frcr_dncl_amt_2": "2000"}],
+        "output3": {"tot_asst_amt": "5000000"},
+    })
+    assert resp.output1[0].pdno == "AAPL"
+    assert resp.output1[0].ovrs_excg_cd == "NASD"
+    assert resp.output2[0].crcy_cd == "USD"
+    assert resp.output3.tot_asst_amt == "5000000"
