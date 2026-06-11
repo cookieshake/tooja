@@ -953,3 +953,104 @@ def fill_from_daily_ccld_row(item: Any, raw_row: dict[str, Any]) -> "Fill | None
         symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),
         side=side, qty=qty, price=avg, time=when, raw=raw_row,
     )
+
+
+# ─── Overseas present-balance ────────────────────────────────────────────────
+
+
+def _money_ccy(amount: Any, currency_code: str | None) -> Money | None:
+    """Foreign-currency Money from a KIS string amount + currency code."""
+    amt = _dec(amount)
+    if amt is None or not currency_code:
+        return None
+    try:
+        ccy = Currency(currency_code)
+    except ValueError:
+        return None
+    return Money(amount=amt, currency=ccy)
+
+
+def position_from_present_balance_row(item: Any) -> Position | None:
+    """One overseas present-balance output1 row -> Position (foreign currency)."""
+    qty = _dec(getattr(item, "cblc_qty13", None))
+    if qty is None or qty == 0:
+        return None
+    ticker = getattr(item, "pdno", None)
+    excg = getattr(item, "ovrs_excg_cd", None)
+    ccy = getattr(item, "buy_crcy_cd", None)
+    if not ticker or not excg:
+        return None
+    try:
+        exchange = Exchange(excg)
+    except ValueError:
+        return None  # unmapped exchange code -> skip this position
+    avg = _money_ccy(getattr(item, "avg_unpr3", None), ccy)
+    if avg is None:
+        return None
+    return Position(
+        symbol=Symbol(ticker=ticker, exchange=exchange),
+        qty=qty,
+        avg_price=avg,
+        current_price=_money_ccy(getattr(item, "ovrs_now_pric1", None), ccy),
+        market_value=_money_ccy(getattr(item, "frcr_evlu_amt2", None), ccy),
+        pnl=_money_ccy(getattr(item, "evlu_pfls_amt2", None), ccy),
+        pnl_rate=_dec(getattr(item, "evlu_pfls_rt1", None)),
+    )
+
+
+def balance_from_present_balance(resp: Any) -> Balance:
+    """Overseas inquire-present-balance -> Balance (foreign cash + positions).
+
+    output2 -> per-currency cash (crcy_cd + frcr_dncl_amt_2).
+    output1 -> positions (foreign currency, ovrs_excg_cd -> Exchange).
+    output3.tot_asst_amt -> overseas total, KRW-converted.
+    """
+    cash: list[Money] = []
+    for row in getattr(resp, "output2", None) or []:
+        # A zero foreign deposit is a meaningful state (a held currency with no
+        # spendable cash), so zero-amount rows are kept — unlike zero-qty
+        # positions, which are dropped.
+        m = _money_ccy(getattr(row, "frcr_dncl_amt_2", None), getattr(row, "crcy_cd", None))
+        if m is not None:
+            cash.append(m)
+    positions = [
+        p
+        for p in (position_from_present_balance_row(r) for r in (getattr(resp, "output1", None) or []))
+        if p is not None
+    ]
+    total: Money | None = None
+    out3 = getattr(resp, "output3", None)
+    if out3 is not None:
+        total = _money_krw(getattr(out3, "tot_asst_amt", None))
+    raw = resp.model_dump(by_alias=True) if hasattr(resp, "model_dump") else {}
+    return Balance(
+        total_asset=total, cash=cash, positions=positions, raw=raw,
+    )
+
+
+def merge_balances(domestic: Balance, overseas: Balance) -> Balance:
+    """Merge two single-call Balances into one.
+
+    Cash is summed per currency, positions are concatenated, and total_asset
+    is summed (both are expected to be KRW-base).
+    """
+    by_ccy: dict = {}
+    for m in list(domestic.cash) + list(overseas.cash):
+        by_ccy[m.currency] = by_ccy.get(m.currency, Decimal(0)) + m.amount
+    cash = [Money(amount=a, currency=c) for c, a in by_ccy.items()]
+    totals = [b.total_asset for b in (domestic, overseas) if b.total_asset is not None]
+    total: Money | None = None
+    if totals:
+        # KIS reports both domestic tot_evlu_amt and overseas tot_asst_amt in KRW,
+        # so summing amounts and taking the first currency is sound. If a non-KRW
+        # total ever slips in this would need an FX step.
+        total = Money(
+            amount=sum((t.amount for t in totals), Decimal(0)),
+            currency=totals[0].currency,
+        )
+    return Balance(
+        total_asset=total,
+        cash=cash,
+        positions=list(domestic.positions) + list(overseas.positions),
+        raw={"domestic": domestic.raw, "overseas": overseas.raw},
+    )
