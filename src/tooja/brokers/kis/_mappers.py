@@ -969,7 +969,8 @@ def _money_ccy(amount: Any, currency_code: str | None) -> Money | None:
     if amt is None or not currency_code:
         return None
     try:
-        ccy = Currency(currency_code)
+        # KIS pads fixed-length code fields with trailing spaces ('USD ').
+        ccy = Currency(currency_code.strip())
     except ValueError:
         return None
     return Money(amount=amt, currency=ccy)
@@ -983,8 +984,11 @@ def _require_currency(currency_code: str | None, *, context: str) -> Currency:
     already owns. So unmapped currencies fail rather than degrade — mirroring
     `currency_of`'s KeyError philosophy.
     """
+    # KIS pads fixed-length code fields with trailing spaces ('USD '); strip
+    # before the enum lookup so padding doesn't turn into a spurious raise.
+    code = currency_code.strip() if currency_code else currency_code
     try:
-        return Currency(currency_code)  # Currency(None) also raises ValueError
+        return Currency(code)  # Currency(None) also raises ValueError
     except ValueError as e:
         raise ValueError(
             f"KIS overseas {context} has unmapped currency code {currency_code!r}"
@@ -1004,8 +1008,10 @@ def position_from_present_balance_row(item: Any) -> Position | None:
         qty = _dec(getattr(item, "cblc_qty13", None))
     if qty is None or qty == 0:
         return None
-    ticker = getattr(item, "pdno", None)
-    excg = getattr(item, "ovrs_excg_cd", None)
+    # KIS pads fixed-length code fields with trailing spaces; strip so the enum
+    # lookups (and the symbol ticker) don't carry padding.
+    ticker = (getattr(item, "pdno", None) or "").strip() or None
+    excg = (getattr(item, "ovrs_excg_cd", None) or "").strip() or None
     ccy = getattr(item, "buy_crcy_cd", None)
     if not ticker or not excg:
         return None

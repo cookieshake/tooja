@@ -278,6 +278,29 @@ def test_balance_from_present_balance_raises_on_unmapped_exchange():
         balance_from_present_balance(resp)
 
 
+def test_present_balance_strips_padded_codes():
+    """KIS pads fixed-length code fields; padded currency/exchange must still parse."""
+    from decimal import Decimal
+    from tooja.brokers.kis._mappers import balance_from_present_balance
+    from tooja.core.enums import Currency, Exchange
+    from tooja.brokers.kis.raw.overseas_stock_trading.inquire_present_balance import (
+        InquirePresentBalanceResponse,
+    )
+    resp = InquirePresentBalanceResponse.model_validate({
+        "rt_cd": "0", "msg_cd": "X", "msg1": "ok",
+        "output1": [{"pdno": "AAPL ", "ovrs_excg_cd": "NASD", "buy_crcy_cd": "USD ",
+                     "ccld_qty_smtl1": "3", "avg_unpr3": "100"}],
+        "output2": [{"crcy_cd": "USD ", "frcr_dncl_amt_2": "500"}],
+        "output3": {"tot_asst_amt": "0"},
+    })
+    bal = balance_from_present_balance(resp)
+    assert {m.currency: m.amount for m in bal.cash}[Currency.USD] == Decimal("500")
+    pos = bal.positions[0]
+    assert pos.symbol.ticker == "AAPL"
+    assert pos.symbol.exchange == Exchange.NASD
+    assert pos.avg_price.currency == Currency.USD
+
+
 def test_balance_from_present_balance_raises_on_unmapped_cash_currency():
     import pytest
     from tooja.brokers.kis._mappers import balance_from_present_balance
