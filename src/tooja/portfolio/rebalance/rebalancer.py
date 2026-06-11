@@ -532,11 +532,10 @@ class Rebalancer:
         available = next(
             (m.amount for m in balance.cash if m.currency == currency), Decimal(0)
         )
-        # Buffer is denominated in the plan currency; skip when total_asset is
-        # reported in a different one (e.g. FX-converted account total) — the
-        # single-currency invariant normally guarantees a match.
-        if balance.total_asset is not None and balance.total_asset.currency == currency:
-            available -= balance.total_asset.amount * self.cash_buffer_rate
+        # Buffer is denominated in the sleeve currency; expected_total is the
+        # sleeve total computed at plan time (cash + positions in this currency).
+        if plan.expected_total is not None and plan.expected_total.currency == currency:
+            available -= plan.expected_total.amount * self.cash_buffer_rate
 
         fallback = {h.symbol: h.price for h in plan.expected_holdings}
         # Re-quote concurrently — sequential round-trips would add latency and
