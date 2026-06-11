@@ -219,6 +219,49 @@ async def test_compute_plan_buys_to_reach_target():
 
 
 @pytest.mark.asyncio
+async def test_load_account_skips_position_on_unmapped_exchange(monkeypatch):
+    """A holding on an exchange with no currency mapping is filtered out, not crashed on."""
+    from tooja.core.enums import Currency, Exchange, OrderSide
+    from tooja.core.models import Balance, Position, Quote
+    from tooja.core.money import Money
+    from tooja.core import markets
+    from datetime import datetime, timezone
+
+    # Simulate an exchange present in the enum but missing its currency mapping
+    # (e.g. a market added to the enum before its currency is registered).
+    monkeypatch.delitem(markets._EXCHANGE_CURRENCY, Exchange.SEHK)
+
+    sym = Symbol(ticker="005930")  # KRX → KRW sleeve
+    unmapped = Symbol(ticker="0700", exchange=Exchange.SEHK)
+    balance = Balance(
+        cash=[Money(amount=Decimal("1000000"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=unmapped, qty=Decimal("5"),
+                avg_price=Money(amount=Decimal("300"), currency=Currency.HKD),
+                current_price=Money(amount=Decimal("320"), currency=Currency.HKD),
+            ),
+        ],
+    )
+    quote = Quote(
+        symbol=sym,
+        price=Money(amount=Decimal("70000"), currency=Currency.KRW),
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {sym: quote}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    plan = await rb.compute_plan()  # must not raise KeyError on the SEHK holding
+    # The unmapped SEHK holding is excluded from the KRW sleeve; only the KRW
+    # target is planned (1,000,000 / 70,000 = 14 shares).
+    assert [o.symbol for o in plan.orders] == [sym]
+    assert plan.orders[0].side == OrderSide.BUY
+    assert plan.orders[0].qty == Decimal("14")
+
+
+@pytest.mark.asyncio
 async def test_compute_plan_skips_below_min_order_value():
     from tooja.core.enums import Currency
     from tooja.core.models import Balance, Position, Quote

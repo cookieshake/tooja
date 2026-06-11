@@ -181,10 +181,21 @@ class Rebalancer:
         starting_cash = next(
             (m.amount for m in balance.cash if m.currency == currency), Decimal(0)
         )
-        positions = [
-            p for p in balance.positions
-            if currency_of(p.symbol.exchange) == currency
-        ]
+        positions = []
+        for p in balance.positions:
+            try:
+                in_sleeve = currency_of(p.symbol.exchange) == currency
+            except KeyError:
+                # A holding on an exchange with no currency mapping can't belong
+                # to this (or any) currency sleeve, so it's filtered out — an
+                # unrelated holding must not crash the rebalance of another
+                # sleeve. (currency_of is total over the Exchange enum today,
+                # guarded by a totality test; this is robustness against future
+                # broker adapters / enum growth, not a silent data drop — the
+                # ingestion mappers still raise on unmapped wire codes.)
+                continue
+            if in_sleeve:
+                positions.append(p)
         return _PlanContext(
             currency=currency, positions=positions, starting_cash=starting_cash,
         )
