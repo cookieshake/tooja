@@ -8,10 +8,12 @@ Drift = sum of |actual_weight - target_weight| across symbols.
 Constraints:
 - Single-currency: all Money inputs (balance, positions, quotes) must share one
   currency — KRW and USD accounts both work, mixing does not. The plan currency
-  is taken from the broker's reported total_asset. Note min_order_value's
-  default (10000) is KRW-oriented; pass an appropriate value for USD accounts.
+  is derived from the exchange of the target symbols (via currency_of); the
+  balance is then sliced to that currency. Note min_order_value's default
+  (10000) is KRW-oriented; pass an appropriate value for USD accounts.
 - An order is dropped if its notional is below `min_order_value`.
-- `cash_buffer_rate` of total assets is held aside (not invested).
+- `cash_buffer_rate` of the sleeve total (cash + current position value in the
+  sleeve currency) is held aside (not invested).
 - execute() is phased: SELLs are submitted and confirmed first, then real cash
   is re-read from the broker and BUYs are re-sized against it (long-only,
   market orders only). compute_plan() remains pure and uses estimated cash.
@@ -49,14 +51,15 @@ def _require_decimal(name: str, value: Decimal) -> Decimal:
 
 @dataclass
 class _PlanContext:
-    total: Decimal
     currency: Currency
-    investable: Decimal
     positions: list[Position]
     # Cash before any planned orders, taken straight from the broker's reported
-    # balance. We do NOT derive it as ``total - invested`` because unpriced
-    # positions are missing from ``invested`` and would inflate the figure.
+    # balance for THIS sleeve's currency.
     starting_cash: Decimal = Decimal(0)
+    # total/investable are computed AFTER prices resolve (sleeve total = cash +
+    # Σ position value), so they start at 0 and are filled by _compute_totals.
+    total: Decimal = Decimal(0)
+    investable: Decimal = Decimal(0)
     current_value: dict[Symbol, Decimal] = field(default_factory=dict)
     current_price: dict[Symbol, Decimal] = field(default_factory=dict)
     unpriced: set[Symbol] = field(default_factory=set)
@@ -147,6 +150,7 @@ class Rebalancer:
         """
         ctx = await self._load_account()
         await self._resolve_prices(ctx)
+        self._compute_totals(ctx)
         sell_orders, buy_candidates = await self._diff_targets(ctx)
 
         fixed_orders: list[OrderRequest] = list(sell_orders)
@@ -162,24 +166,52 @@ class Rebalancer:
             expected_drift=drift,
             expected_holdings=holdings,
             expected_cash=cash,
+            expected_total=Money(amount=ctx.total, currency=ctx.currency),
         )
 
     async def _load_account(self) -> _PlanContext:
+        """Read the broker balance and keep only this sleeve's currency slice.
+
+        The sleeve total is NOT taken from balance.total_asset (that is the whole
+        account FX-converted into one base currency). It is computed later, after
+        prices resolve, from this currency's cash + positions (_compute_totals).
+        """
         balance = await self.broker.account.get_balance()
-        if balance.total_asset is None or balance.total_asset.amount <= 0:
-            raise ValueError(
-                "broker returned no or non-positive total_asset — cannot compute plan"
-            )
-        total = balance.total_asset.amount
-        currency = balance.total_asset.currency
-        investable = (total * (Decimal("1.0") - self.cash_buffer_rate)).quantize(Decimal("1"))
+        currency = self.currency
         starting_cash = next(
             (m.amount for m in balance.cash if m.currency == currency), Decimal(0)
         )
+        positions = [
+            p for p in balance.positions
+            if currency_of(p.symbol.exchange) == currency
+        ]
         return _PlanContext(
-            total=total, currency=currency, investable=investable,
-            positions=balance.positions, starting_cash=starting_cash,
+            currency=currency, positions=positions, starting_cash=starting_cash,
         )
+
+    def _compute_totals(self, ctx: _PlanContext) -> None:
+        """Sleeve total = sleeve cash + Σ(qty × effective_price) over sleeve positions.
+
+        effective_price is the resolved market price, or avg_price when the quote
+        was unavailable (consistent with _summarize/_get_effective_price). This
+        replaces the old reliance on balance.total_asset, which conflates
+        currencies in a multi-currency account.
+        """
+        total = ctx.starting_cash
+        for pos in ctx.positions:
+            price = ctx.current_price.get(pos.symbol)
+            if price is None or price <= 0:
+                price = pos.avg_price.amount
+            total += pos.qty * price
+        if total <= 0:
+            raise ValueError(
+                "sleeve has no positive total (no cash or positions in "
+                f"{ctx.currency.value}) — cannot compute plan"
+            )
+        ctx.total = total
+        ctx.investable = (
+            total * (Decimal("1.0") - self.cash_buffer_rate)
+        ).quantize(Decimal("1"))
 
     async def _resolve_prices(self, ctx: _PlanContext) -> None:
         # Position prices: prefer position.current_price (matching currency), else needs a quote.

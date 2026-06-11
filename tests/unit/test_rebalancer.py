@@ -346,7 +346,9 @@ async def test_compute_plan_skips_target_with_unpriced_holding():
 
 
 @pytest.mark.asyncio
-async def test_compute_plan_rejects_non_positive_total_asset():
+async def test_compute_plan_rejects_zero_sleeve_total():
+    # Migrated: total is now computed from sleeve cash + positions, not total_asset.
+    # A balance with no KRW cash and no KRW positions → sleeve total = 0 → raises.
     from tooja.core.enums import Currency
     from tooja.core.models import Balance
     from tooja.core.money import Money
@@ -359,7 +361,7 @@ async def test_compute_plan_rejects_non_positive_total_asset():
         broker=_ScriptedBroker(balance, {}),
         targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
     )
-    with pytest.raises(ValueError, match="total_asset"):
+    with pytest.raises(ValueError, match="no positive total"):
         await rb.compute_plan()
 
 
@@ -408,8 +410,11 @@ async def test_off_target_short_position_closed_by_buy():
 
     keep = Symbol(ticker="005930")  # target
     short = Symbol(ticker="035720")  # off-target short
+    # Migrated: sleeve total = cash + positions. Short position has qty<0 → negative
+    # contribution. Add cash=1,000,000 so sleeve_total > 0 (1,000,000 - 250,000 = 750,000).
     balance = Balance(
         total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("1000000"), currency=Currency.KRW)],
         positions=[
             Position(
                 symbol=short, qty=Decimal("-5"),
@@ -440,8 +445,12 @@ async def test_unpriced_short_position_marked_unpriced_not_dropped():
     from tooja.core.money import Money
 
     sym = Symbol(ticker="005930")
+    # Migrated: sleeve total = cash + positions. Short (qty=-10) × avg_price(70,000) = -700,000.
+    # Add cash=1,000,000 so sleeve_total = 300,000 > 0. Test intent: unpriced short is flagged,
+    # so target is skipped and no BUY is emitted.
     balance = Balance(
         total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("1000000"), currency=Currency.KRW)],
         positions=[
             Position(
                 symbol=sym, qty=Decimal("-10"),  # short
@@ -883,3 +892,110 @@ def test_rebalancer_cash_sink_currency_must_match_targets():
             targets=[TargetWeight(symbol=Symbol.parse("NASD:AAPL"), weight=Decimal("1.0"))],
             cash_sink=Symbol(ticker="005930"),  # KRW sink, USD targets
         )
+
+
+def _usd_balance():
+    """KRW + USD multi-currency balance: USD $2000 cash, AAPL 10 @ avg 150, TSLA 5 @ avg 380."""
+    from tooja.core.enums import Currency
+    from tooja.core.models import Balance, Position
+    from tooja.core.money import Money
+    aapl = Symbol.parse("NASD:AAPL")
+    tsla = Symbol.parse("NASD:TSLA")
+    return Balance(
+        total_asset=Money(amount=Decimal("9999999"), currency=Currency.KRW),  # FX-rolled-up; must be ignored
+        cash=[
+            Money(amount=Decimal("500000"), currency=Currency.KRW),
+            Money(amount=Decimal("2000"), currency=Currency.USD),
+        ],
+        positions=[
+            Position(symbol=aapl, qty=Decimal("10"),
+                     avg_price=Money(amount=Decimal("150"), currency=Currency.USD)),
+            Position(symbol=tsla, qty=Decimal("5"),
+                     avg_price=Money(amount=Decimal("380"), currency=Currency.USD)),
+        ],
+    )
+
+
+def _usd_quotes(aapl_px="200", tsla_px="400"):
+    from datetime import datetime, timezone
+    from tooja.core.enums import Currency
+    from tooja.core.models import Quote
+    from tooja.core.money import Money
+    aapl = Symbol.parse("NASD:AAPL")
+    tsla = Symbol.parse("NASD:TSLA")
+    def q(sym, px):
+        return Quote(symbol=sym, price=Money(amount=Decimal(px), currency=Currency.USD),
+                     time=datetime.now(timezone.utc))
+    return {aapl: q(aapl, aapl_px), tsla: q(tsla, tsla_px)}
+
+
+@pytest.mark.asyncio
+async def test_sleeve_total_uses_cash_plus_positions_not_total_asset():
+    from tooja.core.enums import Currency
+    from tooja.core.money import Money
+    aapl = Symbol.parse("NASD:AAPL")
+    tsla = Symbol.parse("NASD:TSLA")
+    broker = _ScriptedBroker(_usd_balance(), _usd_quotes())
+    rb = Rebalancer(
+        broker=broker,
+        targets=[
+            TargetWeight(symbol=aapl, weight=Decimal("0.5")),
+            TargetWeight(symbol=tsla, weight=Decimal("0.5")),
+        ],
+    )
+    plan = await rb.compute_plan()
+    # sleeve_total = 2000 + 10*200 + 5*400 = 6000 USD (NOT the 9,999,999 KRW total_asset)
+    assert plan.expected_total == Money(amount=Decimal("6000"), currency=Currency.USD)
+
+
+@pytest.mark.asyncio
+async def test_sleeve_ignores_other_currency_cash_and_positions():
+    aapl = Symbol.parse("NASD:AAPL")
+    tsla = Symbol.parse("NASD:TSLA")
+    broker = _ScriptedBroker(_usd_balance(), _usd_quotes())
+    rb = Rebalancer(
+        broker=broker,
+        targets=[
+            TargetWeight(symbol=aapl, weight=Decimal("0.5")),
+            TargetWeight(symbol=tsla, weight=Decimal("0.5")),
+        ],
+    )
+    plan = await rb.compute_plan()
+    assert plan.expected_cash.currency.value == "USD"
+    assert plan.expected_total.amount == Decimal("6000")
+
+
+@pytest.mark.asyncio
+async def test_sleeve_total_uses_avg_price_for_unpriced_position():
+    aapl = Symbol.parse("NASD:AAPL")
+    tsla = Symbol.parse("NASD:TSLA")
+    quotes = _usd_quotes()
+    del quotes[tsla]  # _ScriptedMarket raises KeyError -> _lookup_price returns None
+    broker = _ScriptedBroker(_usd_balance(), quotes)
+    rb = Rebalancer(
+        broker=broker,
+        targets=[
+            TargetWeight(symbol=aapl, weight=Decimal("0.5")),
+            TargetWeight(symbol=tsla, weight=Decimal("0.5")),
+        ],
+    )
+    plan = await rb.compute_plan()
+    # TSLA valued at avg 380: total = 2000 + 10*200 + 5*380 = 5900
+    assert plan.expected_total.amount == Decimal("5900")
+
+
+@pytest.mark.asyncio
+async def test_sleeve_total_zero_raises():
+    from tooja.core.enums import Currency
+    from tooja.core.models import Balance
+    from tooja.core.money import Money
+    aapl = Symbol.parse("NASD:AAPL")
+    balance = Balance(
+        total_asset=Money(amount=Decimal("500000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("500000"), currency=Currency.KRW)],
+        positions=[],
+    )
+    broker = _ScriptedBroker(balance, _usd_quotes())
+    rb = Rebalancer(broker=broker, targets=[TargetWeight(symbol=aapl, weight=Decimal("1.0"))])
+    with pytest.raises(ValueError, match="no positive total"):
+        await rb.compute_plan()
