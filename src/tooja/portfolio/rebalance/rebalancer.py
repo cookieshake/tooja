@@ -27,6 +27,7 @@ from typing import Iterable
 
 from tooja.core.broker import Broker
 from tooja.core.enums import Currency, OrderSide, OrderStatus, RebalanceDirection
+from tooja.core.markets import currency_of
 from tooja.core.models import (
     MarketOrder,
     Order,
@@ -103,6 +104,7 @@ class Rebalancer:
         self.fill_timeout = fill_timeout
         self._rng = rng if rng is not None else random.Random()
         self._validate_weights()
+        self.currency = self._derive_currency()
 
     def _validate_weights(self) -> None:
         symbols = [t.symbol for t in self.targets]
@@ -115,6 +117,24 @@ class Rebalancer:
             raise ValueError(
                 f"weights must sum to 1.0 (got {total}, tolerance {_WEIGHT_TOLERANCE})"
             )
+
+    def _derive_currency(self) -> Currency:
+        """Sleeve currency = the one currency shared by all targets (+ cash_sink).
+
+        The rebalancer manages exactly one currency. Deriving it from the
+        targets (rather than a constructor argument) keeps Currency out of the
+        public signature and makes a target/currency mismatch impossible.
+        """
+        exchanges = {t.symbol.exchange for t in self.targets}
+        if self.cash_sink is not None:
+            exchanges.add(self.cash_sink.exchange)
+        currencies = {currency_of(ex) for ex in exchanges}
+        if len(currencies) != 1:
+            raise ValueError(
+                f"targets span multiple currencies {sorted(c.value for c in currencies)} "
+                "— use one Rebalancer per currency"
+            )
+        return next(iter(currencies))
 
     async def compute_plan(self) -> RebalancePlan:
         """Diff current vs target weights and produce the order list.

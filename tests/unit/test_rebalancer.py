@@ -842,3 +842,44 @@ async def test_recap_skips_buffer_when_total_asset_currency_differs():
     # budget. With the currency check the full 10-share buy fits (10*200=2000).
     assert len(rb.broker.orders.received) == 1
     assert rb.broker.orders.received[0].qty == Decimal("10")
+
+
+def test_rebalancer_derives_usd_currency_from_targets():
+    from tooja.core.enums import Currency
+    rb = Rebalancer(
+        broker=_StubBroker(),
+        targets=[
+            TargetWeight(symbol=Symbol.parse("NASD:AAPL"), weight=Decimal("0.5")),
+            TargetWeight(symbol=Symbol.parse("NYSE:IBM"), weight=Decimal("0.5")),
+        ],
+    )
+    assert rb.currency == Currency.USD
+
+
+def test_rebalancer_derives_krw_currency_from_targets():
+    from tooja.core.enums import Currency
+    rb = Rebalancer(
+        broker=_StubBroker(),
+        targets=[TargetWeight(symbol=Symbol(ticker="005930"), weight=Decimal("1.0"))],
+    )
+    assert rb.currency == Currency.KRW
+
+
+def test_rebalancer_rejects_mixed_currency_targets():
+    with pytest.raises(ValueError, match="multiple currencies"):
+        Rebalancer(
+            broker=_StubBroker(),
+            targets=[
+                TargetWeight(symbol=Symbol.parse("NASD:AAPL"), weight=Decimal("0.5")),
+                TargetWeight(symbol=Symbol(ticker="005930"), weight=Decimal("0.5")),
+            ],
+        )
+
+
+def test_rebalancer_cash_sink_currency_must_match_targets():
+    with pytest.raises(ValueError, match="multiple currencies"):
+        Rebalancer(
+            broker=_StubBroker(),
+            targets=[TargetWeight(symbol=Symbol.parse("NASD:AAPL"), weight=Decimal("1.0"))],
+            cash_sink=Symbol(ticker="005930"),  # KRW sink, USD targets
+        )
