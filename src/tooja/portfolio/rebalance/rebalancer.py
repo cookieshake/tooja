@@ -534,6 +534,10 @@ class Rebalancer:
         )
         # Buffer is denominated in the sleeve currency; expected_total is the
         # sleeve total computed at plan time (cash + positions in this currency).
+        # Note: recap deliberately reserves the buffer against the real post-sell
+        # cash here, rather than re-deriving investable — it only re-caps the buy
+        # budget, and the reserve stays in the same currency, so it is not a
+        # double application of the buffer.
         if plan.expected_total is not None and plan.expected_total.currency == currency:
             available -= plan.expected_total.amount * self.cash_buffer_rate
 

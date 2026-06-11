@@ -281,3 +281,19 @@ def test_merge_balances_concats_and_sums_total():
     assert by_ccy[Currency.USD] == Decimal("2000")
     assert merged.total_asset.amount == Decimal("6000000")
     assert merged.total_asset.currency == Currency.KRW
+
+
+def test_merge_balances_rejects_mismatched_total_currencies():
+    from decimal import Decimal
+
+    import pytest
+
+    from tooja.brokers.kis._mappers import merge_balances
+    from tooja.core.enums import Currency
+    from tooja.core.models import Balance
+    from tooja.core.money import Money
+
+    dom = Balance(total_asset=Money(amount=Decimal("1"), currency=Currency.KRW), cash=[], positions=[])
+    ovs = Balance(total_asset=Money(amount=Decimal("1"), currency=Currency.USD), cash=[], positions=[])
+    with pytest.raises(ValueError, match="cannot merge total_asset across currencies"):
+        merge_balances(dom, ovs)

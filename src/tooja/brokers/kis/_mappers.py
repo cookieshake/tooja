@@ -1042,8 +1042,15 @@ def merge_balances(domestic: Balance, overseas: Balance) -> Balance:
     total: Money | None = None
     if totals:
         # KIS reports both domestic tot_evlu_amt and overseas tot_asst_amt in KRW,
-        # so summing amounts and taking the first currency is sound. If a non-KRW
-        # total ever slips in this would need an FX step.
+        # so summing amounts and taking the first currency is sound. Guard loudly
+        # if a non-KRW total ever slips in — summing across currencies would
+        # silently produce a wrong number; it would need an FX step instead.
+        currencies = {t.currency for t in totals}
+        if len(currencies) > 1:
+            raise ValueError(
+                f"cannot merge total_asset across currencies "
+                f"{sorted(c.value for c in currencies)} — both are expected in KRW base"
+            )
         total = Money(
             amount=sum((t.amount for t in totals), Decimal(0)),
             currency=totals[0].currency,
