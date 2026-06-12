@@ -37,9 +37,14 @@ from tooja.brokers.kis.raw.domestic_stock_trading.order_rvsecncl import (
     OrderRvsecnclExecutor,
     OrderRvsecnclRequest,
 )
+from tooja.brokers.kis.raw.overseas_stock_trading.order import (
+    OrderExecutor as OvrsOrderExecutor,
+    OrderRequest as OvrsOrderRequest,
+)
 from tooja.core.clients import OrdersClient
 from tooja.core.enums import Exchange, OrderSide, OrderStatus, TimeInForce
-from tooja.core.errors import OrderNotFound, OrderRejected
+from tooja.core.errors import OrderNotFound, OrderRejected, UnsupportedOperation
+from tooja.core.markets import currency_of
 from tooja.core.models import Fill, Order, OrderRequest, Symbol
 
 if TYPE_CHECKING:
@@ -128,6 +133,11 @@ class KisOrdersClient(OrdersClient):
 
     async def create(self, req: OrderRequest) -> Order:
         sym = _as_symbol(req.symbol)
+        if _is_overseas(sym.exchange):
+            return await self._create_overseas(req, sym)
+        return await self._create_domestic(req, sym)
+
+    async def _create_domestic(self, req: OrderRequest, sym: Symbol) -> Order:
         creds = self._broker.credentials
         ord_dvsn = kis_ord_dvsn(req.type)
         price = getattr(req, "price", None)
@@ -144,14 +154,55 @@ class KisOrdersClient(OrdersClient):
 
         tr_id = _order_tr_id(req.side, self._broker.is_virtual)
         resp = await call(self._broker, OrderCashExecutor, raw_req, tr_id=tr_id)
+        return self._order_from_create_resp(
+            resp, sym, req, price, endpoint=OrderCashExecutor.PATH,
+        )
 
-        out = getattr(resp, "output", []) or []
-        if not out or not getattr(out[0], "ODNO", None):
-            raise OrderRejected(
-                "KIS order-cash returned no ODNO", broker="kis",
-                endpoint=OrderCashExecutor.PATH,
+    async def _create_overseas(self, req: OrderRequest, sym: Symbol) -> Order:
+        if req.type == "market":
+            raise UnsupportedOperation(
+                "KIS overseas orders support limit only — the regular-session "
+                "API has no market ORD_DVSN",
+                broker="kis",
             )
-        head = out[0]
+        price = req.price
+        expected = currency_of(sym.exchange)
+        if price.currency != expected:
+            raise ValueError(
+                f"order price currency {price.currency.value} does not match "
+                f"{sym.exchange.value} settlement currency {expected.value}"
+            )
+        creds = self._broker.credentials
+        raw_req = OvrsOrderRequest(
+            CANO=creds.cano,
+            ACNT_PRDT_CD=creds.acnt_prdt_cd,
+            OVRS_EXCG_CD=sym.exchange.value,
+            PDNO=sym.ticker,
+            ORD_QTY=str(req.qty),
+            OVRS_ORD_UNPR=str(price.amount),
+            SLL_TYPE="00" if req.side is OrderSide.SELL else None,
+            ORD_SVR_DVSN_CD="0",
+            ORD_DVSN="00",
+        )
+        tr_id = _ovrs_order_tr_id(sym.exchange, req.side, self._broker.is_virtual)
+        resp = await call(self._broker, OvrsOrderExecutor, raw_req, tr_id=tr_id)
+        return self._order_from_create_resp(
+            resp, sym, req, price, endpoint=OvrsOrderExecutor.PATH,
+        )
+
+    def _order_from_create_resp(
+        self, resp, sym: Symbol, req: OrderRequest, price, *, endpoint: str,
+    ) -> Order:
+        # Domestic order-cash returns `output` as a (normalized) list;
+        # the overseas order endpoint returns a single object.
+        out = getattr(resp, "output", None)
+        head = out[0] if isinstance(out, list) and out else (
+            out if not isinstance(out, list) else None
+        )
+        if head is None or not getattr(head, "ODNO", None):
+            raise OrderRejected(
+                "KIS order returned no ODNO", broker="kis", endpoint=endpoint,
+            )
         ord_tmd = getattr(head, "ORD_TMD", None)
         submitted = _parse_ord_tmd(ord_tmd) or datetime.now(timezone.utc)
 
