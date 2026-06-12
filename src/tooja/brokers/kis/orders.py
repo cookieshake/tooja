@@ -38,7 +38,7 @@ from tooja.brokers.kis.raw.domestic_stock_trading.order_rvsecncl import (
     OrderRvsecnclRequest,
 )
 from tooja.core.clients import OrdersClient
-from tooja.core.enums import OrderSide, OrderStatus, TimeInForce
+from tooja.core.enums import Exchange, OrderSide, OrderStatus, TimeInForce
 from tooja.core.errors import OrderNotFound, OrderRejected
 from tooja.core.models import Fill, Order, OrderRequest, Symbol
 
@@ -51,6 +51,57 @@ _TR_BUY_REAL = "TTTC0012U"
 _TR_BUY_DEMO = "VTTC0012U"
 _TR_SELL_REAL = "TTTC0011U"
 _TR_SELL_DEMO = "VTTC0011U"
+
+# Overseas TR matrix (specs/kis/api-list/overseas_stock_trading.json).
+# Region key: US = NASD/NYSE/AMEX, JP = TKSE, HK = SEHK, SHA = SHAA,
+# SZN = SZAA, VN = HASE/VNSE.
+_OVRS_REGION: dict[Exchange, str] = {
+    Exchange.NASD: "US", Exchange.NYSE: "US", Exchange.AMEX: "US",
+    Exchange.TKSE: "JP", Exchange.SEHK: "HK",
+    Exchange.SHAA: "SHA", Exchange.SZAA: "SZN",
+    Exchange.HASE: "VN", Exchange.VNSE: "VN",
+}
+
+# (region, side) -> (real, demo). Demo is V + same suffix, EXCEPT US sell:
+# KIS demo uses VTTT1001U while real uses TTTT1006U.
+_OVRS_ORDER_TR: dict[tuple[str, OrderSide], tuple[str, str]] = {
+    ("US", OrderSide.BUY): ("TTTT1002U", "VTTT1002U"),
+    ("US", OrderSide.SELL): ("TTTT1006U", "VTTT1001U"),
+    ("JP", OrderSide.BUY): ("TTTS0308U", "VTTS0308U"),
+    ("JP", OrderSide.SELL): ("TTTS0307U", "VTTS0307U"),
+    ("SHA", OrderSide.BUY): ("TTTS0202U", "VTTS0202U"),
+    ("SHA", OrderSide.SELL): ("TTTS1005U", "VTTS1005U"),
+    ("HK", OrderSide.BUY): ("TTTS1002U", "VTTS1002U"),
+    ("HK", OrderSide.SELL): ("TTTS1001U", "VTTS1001U"),
+    ("SZN", OrderSide.BUY): ("TTTS0305U", "VTTS0305U"),
+    ("SZN", OrderSide.SELL): ("TTTS0304U", "VTTS0304U"),
+    ("VN", OrderSide.BUY): ("TTTS0311U", "VTTS0311U"),
+    ("VN", OrderSide.SELL): ("TTTS0310U", "VTTS0310U"),
+}
+
+# region -> (real, demo); one TR covers both modify and cancel.
+_OVRS_RVSECNCL_TR: dict[str, tuple[str, str]] = {
+    "US": ("TTTT1004U", "VTTT1004U"),
+    "HK": ("TTTS1003U", "VTTS1003U"),
+    "JP": ("TTTS0309U", "VTTS0309U"),
+    "SHA": ("TTTS0302U", "VTTS0302U"),
+    "SZN": ("TTTS0306U", "VTTS0306U"),
+    "VN": ("TTTS0312U", "VTTS0312U"),
+}
+
+
+def _is_overseas(exchange: Exchange) -> bool:
+    return exchange in _OVRS_REGION
+
+
+def _ovrs_order_tr_id(exchange: Exchange, side: OrderSide, is_virtual: bool) -> str:
+    real, demo = _OVRS_ORDER_TR[(_OVRS_REGION[exchange], side)]
+    return demo if is_virtual else real
+
+
+def _ovrs_rvsecncl_tr_id(exchange: Exchange, is_virtual: bool) -> str:
+    real, demo = _OVRS_RVSECNCL_TR[_OVRS_REGION[exchange]]
+    return demo if is_virtual else real
 
 
 def _as_symbol(s: Symbol | str) -> Symbol:
