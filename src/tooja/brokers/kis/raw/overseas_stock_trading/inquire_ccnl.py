@@ -1,4 +1,10 @@
-"""Auto-generated from apiportal spec — do not edit by hand."""
+"""Auto-generated from apiportal spec — do not edit by hand.
+
+NOTE: the KIS spec marks `output` as A0002 (scalar array) even though it has
+child rows, so the codegen emitted `list[str]`. Typed to the generated row
+item class to match the wire. (generate.py now handles A0002-with-children;
+kept here so a regen before the next full review doesn't regress.)
+"""
 
 from __future__ import annotations
 
@@ -66,7 +72,7 @@ class InquireCcnlResponse(KisCommonResponse):
 
     ctx_area_fk200: str | None = None  # 연속조회검색조건200
     ctx_area_nk200: str | None = None  # 연속조회키200
-    output: list[str] = []  # 응답상세
+    output: list[InquireCcnlResponse_OutputItem] = []  # 응답상세
 
 class InquireCcnlExecutor(ApiExecutor[InquireCcnlRequest, InquireCcnlResponse]):
     """해외주식 주문체결내역[v1_해외주식-007]."""
