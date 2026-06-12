@@ -5,7 +5,13 @@ production server (실제 자금). The library does NOT add a dry-run flag; the
 env selection is the entire safety boundary, matching ccxt/Alpaca/IB
 convention.
 
-Side -> TR_ID:
+Routing: Symbol.exchange KRX/NXT -> domestic cash endpoints; the nine
+overseas exchanges (NASD/NYSE/AMEX/SEHK/SHAA/SZAA/TKSE/HASE/VNSE) ->
+/uapi/overseas-stock/v1/trading/* with a per-region TR matrix (see
+_OVRS_ORDER_TR / _OVRS_RVSECNCL_TR). Overseas regular-session orders are
+limit-only; market orders raise UnsupportedOperation.
+
+Domestic TR_IDs:
 - BUY  : TTTC0012U (real) / VTTC0012U (demo)
 - SELL : TTTC0011U (real) / VTTC0011U (demo)
 
