@@ -8,7 +8,9 @@ Nested output handling:
 - propertyOrder ``006`` (parent, A0005/A0003/A0002) + ``006.001``... (children, A0001 etc.)
 - Parent A0005 (Object Array) -> ``list[<Name>Item]`` + separate Item class
 - Parent A0003 (Object)       -> ``<Name>Item | None`` + separate Item class
-- Parent A0002 (Array)        -> ``list[str] | None`` (treated as scalar array)
+- Parent A0002 (Array)        -> ``list[str] | None`` only when it has no
+  children; with children it renders ``list[<Name>Item]`` like A0005 (KIS
+  specs sometimes mark container arrays A0002)
 - Orphan child (no parent)    -> exposed as a flat field
 - Siblings whose propertyOrder differs only in the integer part = top-level scalars
 """
@@ -239,15 +241,14 @@ def render_body_class(class_name: str, base: str,
         use_decimal = use_decimal or item_dec
 
         ptype = parent["propertyType"]
-        if ptype == "A0005":
+        if ptype in ("A0005", "A0002"):
+            # KIS specs sometimes mark a container array A0002 ("scalar
+            # array") even though it has child rows — trust the children.
             field_ty = f"list[{item_cls}]"
             default = " = []"
         elif ptype == "A0003":
             field_ty = f"{item_cls} | None"
             default = " = None"
-        elif ptype == "A0002":
-            field_ty = "list[str]"
-            default = " = []"
         else:
             field_ty = "list"
             default = " = []"

@@ -83,7 +83,7 @@ Both adapters speak the same API; they differ in how much of it they implement.
 |---------------|------------------------------------------------------|------------------------------------------------------------|
 | **market**    | full — quote, orderbook, OHLCV, price limits         | quote, orderbook, price limits; OHLCV `1m`/`1d` only       |
 | **account**   | full                                                 | full                                                       |
-| **orders**    | full, incl. fills (`list_fills`/`iter_fills`)        | no stop orders, no fills                                   |
+| **orders**    | full, incl. fills; overseas exchanges (US/HK/JP/CN/VN, limit-only) | no stop orders, no fills                     |
 | **info**      | full — incl. dividends, financials, halts            | `get_stock`, `get_warnings`, `is_holiday` only             |
 | **analytics** | ✅ investor flows, program trading, short selling, …  | —                                                          |
 | **rankings**  | ✅                                                    | —                                                          |
@@ -172,6 +172,12 @@ await broker.orders.cancel(order.order_id)                        # cancel
 # market sell
 await broker.orders.create(MarketOrder(
     symbol=Symbol.parse("000660"), side=OrderSide.SELL, qty=Decimal(5),
+))
+
+# overseas (KIS): routed by the exchange prefix — limit orders only
+await broker.orders.create(LimitOrder(
+    symbol=Symbol.parse("NASD:AAPL"), side=OrderSide.BUY, qty=Decimal(1),
+    price=Money(amount=Decimal("145.00"), currency=Currency.USD),
 ))
 
 # query

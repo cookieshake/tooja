@@ -955,6 +955,101 @@ def fill_from_daily_ccld_row(item: Any, raw_row: dict[str, Any]) -> "Fill | None
     )
 
 
+# ─── Overseas inquire-ccnl (orders/fills) ────────────────────────────────────
+
+
+def _ovrs_ccnl_common(item: Any) -> tuple | None:
+    """Shared field extraction for overseas inquire-ccnl rows.
+
+    Returns (odno, symbol, currency, side, submitted) or None when the row
+    lacks identity fields. Unmapped exchange/currency codes raise — a dropped
+    row would hide a live order from the caller.
+    """
+    odno = getattr(item, "odno", None)
+    ticker = (getattr(item, "pdno", None) or "").strip() or None
+    excg = (getattr(item, "ovrs_excg_cd", None) or "").strip() or None
+    if not odno or not ticker or not excg:
+        return None
+    try:
+        exchange = Exchange(excg)
+    except ValueError as e:
+        raise ValueError(
+            f"KIS overseas order {odno} has unmapped exchange code {excg!r}"
+        ) from e
+    currency = _require_currency(
+        getattr(item, "tr_crcy_cd", None), context=f"order {odno}",
+    )
+    side = (
+        OrderSide.SELL
+        if getattr(item, "sll_buy_dvsn_cd", None) == "01"
+        else OrderSide.BUY
+    )
+    # dmst_ord_dt/thco_ord_tmd are KST (domestic booking time); ord_dt/ord_tmd
+    # are exchange-local and would mis-shift through the KST parser.
+    submitted = _parse_kst_datetime(
+        getattr(item, "dmst_ord_dt", None), getattr(item, "thco_ord_tmd", None),
+    ) or _parse_kst_datetime(
+        getattr(item, "ord_dt", None), getattr(item, "ord_tmd", None),
+    ) or _utc_now()
+    symbol = Symbol(ticker=ticker, exchange=exchange)
+    return odno, symbol, currency, side, submitted
+
+
+def order_from_ovrs_ccnl_row(item: Any, raw_row: dict[str, Any]) -> "Order | None":
+    """Convert overseas inquire-ccnl row to Order."""
+    from tooja.core.models import Order
+
+    common = _ovrs_ccnl_common(item)
+    if common is None:
+        return None
+    odno, symbol, currency, side, submitted = common
+    qty = _dec(getattr(item, "ft_ord_qty", None)) or Decimal(0)
+    filled = _dec(getattr(item, "ft_ccld_qty", None)) or Decimal(0)
+    remaining = _dec(getattr(item, "nccs_qty", None))
+    price_amt = _dec(getattr(item, "ft_ord_unpr3", None))
+    price = (
+        Money(amount=price_amt, currency=currency)
+        if price_amt is not None and price_amt > 0 else None
+    )
+    avg_amt = _dec(getattr(item, "ft_ccld_unpr3", None))
+    avg = (
+        Money(amount=avg_amt, currency=currency)
+        if avg_amt is not None and avg_amt > 0 and filled > 0 else None
+    )
+    prcs = getattr(item, "prcs_stat_name", None) or ""
+    if "거부" in prcs:
+        status = OrderStatus.REJECTED
+    elif getattr(item, "rvse_cncl_dvsn", None) == "02":
+        status = OrderStatus.CANCELLED
+    else:
+        status = map_order_status(None, qty, filled, remaining)
+    return Order(
+        order_id=odno, symbol=symbol, side=side,
+        qty=qty, filled_qty=filled, avg_fill_price=avg,
+        type="limit",   # the overseas regular-session API is limit-only
+        price=price, status=status, submitted_at=submitted, raw=raw_row,
+    )
+
+
+def fill_from_ovrs_ccnl_row(item: Any, raw_row: dict[str, Any]) -> "Fill | None":
+    """Overseas inquire-ccnl row -> Fill, for rows with executed quantity."""
+    from tooja.core.models import Fill
+
+    common = _ovrs_ccnl_common(item)
+    if common is None:
+        return None
+    odno, symbol, currency, side, submitted = common
+    qty = _dec(getattr(item, "ft_ccld_qty", None))
+    avg_amt = _dec(getattr(item, "ft_ccld_unpr3", None))
+    if qty is None or qty == 0 or avg_amt is None or avg_amt == 0:
+        return None
+    return Fill(
+        order_id=odno, symbol=symbol, side=side, qty=qty,
+        price=Money(amount=avg_amt, currency=currency),
+        time=submitted, raw=raw_row,
+    )
+
+
 # ─── Overseas present-balance ────────────────────────────────────────────────
 
 

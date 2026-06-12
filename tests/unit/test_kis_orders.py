@@ -136,6 +136,12 @@ async def test_get_uses_odno_filter_for_single_call(monkeypatch):
                 model_dump=lambda: {"odno": "0000000001"},
             )
             return SimpleNamespace(output1=[row], headers=None)
+        from tooja.brokers.kis.raw.overseas_stock_trading.inquire_ccnl import (
+            InquireCcnlExecutor,
+        )
+        if executor_cls is InquireCcnlExecutor:
+            # get() also fans out to the overseas history — empty here.
+            return SimpleNamespace(output=[], headers=None)
         raise AssertionError(f"unexpected executor: {executor_cls}")
 
     monkeypatch.setattr(orders_mod, "call", fake_call)
@@ -190,6 +196,12 @@ async def test_cancel_sends_qty_zero_for_full_cancel(monkeypatch):
         from tooja.brokers.kis.raw.domestic_stock_trading.inquire_daily_ccld import (
             InquireDailyCcldExecutor,
         )
+        from tooja.brokers.kis.raw.overseas_stock_trading.inquire_ccnl import (
+            InquireCcnlExecutor,
+        )
+        if executor_cls is InquireCcnlExecutor:
+            # get() also fans out to the overseas history — empty here.
+            return SimpleNamespace(output=[], headers=None)
         assert executor_cls is InquireDailyCcldExecutor
         list_call["n"] += 1
         if list_call["n"] == 1:

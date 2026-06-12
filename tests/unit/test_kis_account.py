@@ -187,3 +187,32 @@ async def test_get_balance_degrades_to_domestic_when_overseas_not_enrolled(monke
     assert by_ccy[Currency.KRW] == Decimal("500000")
     assert Currency.USD not in by_ccy  # overseas skipped
     assert bal.total_asset.amount == Decimal("1000000")  # domestic only
+
+
+@pytest.mark.asyncio
+async def test_get_positions_includes_overseas(monkeypatch):
+    from tooja.core.enums import Exchange  # noqa: F401 — exchange asserted via Symbol
+    from tooja.core.models import Balance, Position, Symbol
+
+    krx_pos = Position(
+        symbol=Symbol.parse("005930"), qty=Decimal(10),
+        avg_price=Money(amount=Decimal(70000), currency=Currency.KRW),
+    )
+    us_pos = Position(
+        symbol=Symbol.parse("NASD:AAPL"), qty=Decimal(2),
+        avg_price=Money(amount=Decimal("145.00"), currency=Currency.USD),
+    )
+
+    async def fake_balance(self):
+        return Balance(positions=[krx_pos, us_pos])
+
+    monkeypatch.setattr(KisAccountClient, "get_balance", fake_balance)
+    client = KisAccountClient(_broker())
+
+    positions = await client.get_positions()
+    assert positions == [krx_pos, us_pos]
+
+    # Strict ticker+exchange matching.
+    assert (await client.get_position("NASD:AAPL")) == us_pos
+    assert (await client.get_position("005930")) == krx_pos
+    assert (await client.get_position("AAPL")) is None  # bare → KRX, no match

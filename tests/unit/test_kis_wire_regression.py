@@ -220,3 +220,36 @@ async def test_inquire_balance_request_includes_ofl_yn():
         "Adapter must send OFL_YN even though spec lists it as Optional — "
         "KIS server rejects with 'INPUT_FIELD_NAME OFL_YN' otherwise."
     )
+
+
+def test_overseas_inquire_ccnl_output_rows_are_typed():
+    """Regression: generator emitted `output: list[str]` for container arrays
+    marked A0002 in the KIS spec, so real dict rows failed validation."""
+    from tooja.brokers.kis.raw.overseas_stock_trading.inquire_ccnl import (
+        InquireCcnlResponse,
+    )
+
+    resp = InquireCcnlResponse.model_validate({
+        "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "ok",
+        "ctx_area_fk200": "", "ctx_area_nk200": "",
+        "output": [{
+            "ord_dt": "20260612", "odno": "0030089601",
+            "sll_buy_dvsn_cd": "02", "pdno": "AAPL",
+            "ft_ord_qty": "2", "ft_ord_unpr3": "145.00",
+            "ft_ccld_qty": "0", "nccs_qty": "2",
+            "ovrs_excg_cd": "NASD", "tr_crcy_cd": "USD",
+        }],
+    })
+    assert resp.output[0].pdno == "AAPL"
+
+
+def test_overseas_inquire_nccs_output_rows_are_typed():
+    from tooja.brokers.kis.raw.overseas_stock_trading.inquire_nccs import (
+        InquireNccsResponse,
+    )
+
+    resp = InquireNccsResponse.model_validate({
+        "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "ok",
+        "output": [{"odno": "1", "pdno": "AAPL"}],
+    })
+    assert resp.output[0].pdno == "AAPL"
