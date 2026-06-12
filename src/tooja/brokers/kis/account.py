@@ -12,7 +12,6 @@ from tooja.brokers.kis._mappers import (
     balance_from_inquire,
     balance_from_present_balance,
     merge_balances,
-    position_from_balance_row,
 )
 from tooja.brokers.kis.raw.domestic_stock_trading.inquire_balance import (
     InquireBalanceExecutor,
@@ -87,13 +86,15 @@ class KisAccountClient(AccountClient):
         return balance_from_present_balance(resp)
 
     async def get_positions(self) -> list[Position]:
-        rows, _ = await self._iterate_balance()
-        return [p for p in (position_from_balance_row(r) for r in rows) if p is not None]
+        # Single source of truth: the same domestic+overseas fan-out (and
+        # PermissionDenied carve-out) as get_balance, so the two views can
+        # never diverge.
+        return (await self.get_balance()).positions
 
     async def get_position(self, symbol: Symbol | str) -> Position | None:
         sym = _as_symbol(symbol)
         for p in await self.get_positions():
-            if p.symbol.ticker == sym.ticker:
+            if p.symbol.ticker == sym.ticker and p.symbol.exchange == sym.exchange:
                 return p
         return None
 
