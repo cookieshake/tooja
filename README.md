@@ -246,7 +246,8 @@ await rb.execute(plan)           # place the planned orders
   converges over many runs.
 - **`direction`** — restrict to buys only, sells only, or both.
 - **`cash_sink`** — invest cash above the buffer into one symbol instead of
-  leaving it idle.
+  leaving it idle. Suppressed when `direction=SELL_ONLY` (the sink only ever
+  adds buy exposure).
 
 `Rebalancer` depends only on the `Broker` ABC, so it works with any adapter.
 

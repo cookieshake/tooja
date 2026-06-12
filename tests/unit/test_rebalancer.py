@@ -811,7 +811,7 @@ async def test_execute_recaps_buys_in_usd():
     from tooja.core.money import Money
     from tooja.portfolio import ExpectedHolding
 
-    sym = Symbol(ticker="NASD:AAPL")
+    sym = Symbol.parse("NASD:AAPL")
     plan = RebalancePlan(
         orders=[MarketOrder(symbol=sym, side=OrderSide.BUY, qty=Decimal("10"))],
         expected_drift=Decimal("0.0"),
@@ -839,15 +839,16 @@ async def test_execute_recaps_buys_in_usd():
 
 
 @pytest.mark.asyncio
-async def test_recap_falls_back_to_balance_currency_when_no_expected_cash():
-    """expected_cash=None must not silently assume KRW — derive currency from
-    the balance's total_asset, mirroring _load_account."""
+async def test_recap_uses_sleeve_currency_when_no_expected_cash():
+    """expected_cash=None must not silently assume KRW — the budget currency is
+    the sleeve currency derived from the targets, NOT balance.total_asset
+    (which is the whole-account FX rollup, here adversarially KRW)."""
     from tooja.core.enums import Currency, OrderSide
     from tooja.core.models import Balance, MarketOrder
     from tooja.core.money import Money
     from tooja.portfolio import ExpectedHolding
 
-    sym = Symbol(ticker="NASD:AAPL")
+    sym = Symbol.parse("NASD:AAPL")
     plan = RebalancePlan(
         orders=[MarketOrder(symbol=sym, side=OrderSide.BUY, qty=Decimal("5"))],
         expected_drift=Decimal("0.0"),
@@ -858,7 +859,7 @@ async def test_recap_falls_back_to_balance_currency_when_no_expected_cash():
         expected_cash=None,
     )
     balance = Balance(
-        total_asset=Money(amount=Decimal("2000"), currency=Currency.USD),
+        total_asset=Money(amount=Decimal("2600000"), currency=Currency.KRW),  # FX rollup
         cash=[Money(amount=Decimal("2000"), currency=Currency.USD)],
     )
     rb = Rebalancer(
@@ -872,6 +873,41 @@ async def test_recap_falls_back_to_balance_currency_when_no_expected_cash():
     # With a KRW fallback the USD cash entry is never found → budget 0 → buy dropped.
     assert len(rb.broker.orders.received) == 1
     assert rb.broker.orders.received[0].qty == Decimal("5")
+
+
+@pytest.mark.asyncio
+async def test_recap_never_budgets_other_currency_cash():
+    """Regression: a USD sleeve with only KRW cash has budget 0. The old code
+    derived the budget currency from balance.total_asset (KRW rollup) and spent
+    the KRW *amount* against USD-priced buys — submitting a $2,000 buy with $0."""
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, MarketOrder
+    from tooja.core.money import Money
+    from tooja.portfolio import ExpectedHolding
+
+    sym = Symbol.parse("NASD:AAPL")
+    plan = RebalancePlan(
+        orders=[MarketOrder(symbol=sym, side=OrderSide.BUY, qty=Decimal("10"))],
+        expected_drift=Decimal("0.0"),
+        expected_holdings=[
+            ExpectedHolding(symbol=sym, qty=Decimal("10"),
+                            price=Decimal("200"), value=Decimal("2000")),
+        ],
+        expected_cash=None,
+    )
+    balance = Balance(
+        total_asset=Money(amount=Decimal("500000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("500000"), currency=Currency.KRW)],  # zero USD
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+        min_order_value=Decimal("100"),
+    )
+    rb.broker.orders = _FillTrackingOrders()
+    await rb.execute(plan)
+    assert rb.broker.orders.received == []
 
 
 @pytest.mark.asyncio

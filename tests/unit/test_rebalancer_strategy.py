@@ -980,3 +980,70 @@ async def test_cash_sink_reserves_for_unpriced_cover():
     # surplus above reserve = 380,000 -> 38 shares.
     # Old (unpriced cover = 0) would leave 480,000 -> 48 shares.
     assert sink_qty == Decimal("38")
+
+
+@pytest.mark.asyncio
+async def test_cash_sink_suppressed_in_sell_only_mode():
+    """direction=SELL_ONLY must suppress the cash sink: the sink only ever adds
+    BUY exposure, and a sell-only run (de-risking / withdrawal prep) must not
+    reinvest the freed cash."""
+    from tooja.core.enums import OrderSide
+
+    target = Symbol(ticker="005930")
+    off = Symbol(ticker="035720")
+    sink = Symbol(ticker="000660")
+    balance = Balance(
+        cash=[Money(amount=Decimal("0"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=off, qty=Decimal("10"),
+                avg_price=Money(amount=Decimal("50000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("50000"), currency=Currency.KRW),
+            ),
+        ],
+    )
+    quotes = {
+        target: Quote(symbol=target, price=Money(amount=Decimal("70000"), currency=Currency.KRW),
+                      time=datetime.now(timezone.utc)),
+        sink: Quote(symbol=sink, price=Money(amount=Decimal("10000"), currency=Currency.KRW),
+                    time=datetime.now(timezone.utc)),
+    }
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, quotes),
+        targets=[TargetWeight(symbol=target, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+        direction=RebalanceDirection.SELL_ONLY,
+        cash_sink=sink,
+    )
+    plan = await rb.compute_plan()
+    # The off-target SELL goes through; no BUY of any kind (sink included).
+    assert [(o.side, o.symbol) for o in plan.orders] == [(OrderSide.SELL, off)]
+
+
+@pytest.mark.asyncio
+async def test_min_order_value_gates_full_gap_not_step_scaled_notional():
+    """min_order_value filters on the FULL gap |target - actual|, so with
+    step_rate < 1 the emitted order's notional may be smaller than
+    min_order_value. Pinned deliberately: gating the scaled notional instead
+    would permanently stall gradual runs once gap * step_rate < min (e.g.
+    min 10,000 at step 0.01 freezes 1,000,000 short of target)."""
+    sym = Symbol(ticker="005930")
+    balance = Balance(
+        cash=[Money(amount=Decimal("1000000"), currency=Currency.KRW)],
+        positions=[],
+    )
+    quote = Quote(
+        symbol=sym, price=Money(amount=Decimal("1000"), currency=Currency.KRW),
+        time=datetime.now(timezone.utc),
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {sym: quote}),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+        min_order_value=Decimal("10000"),
+        step_rate=Decimal("0.005"),  # gap 1,000,000 -> step amount 5,000 < min
+    )
+    plan = await rb.compute_plan()
+    # Gap (1,000,000) >= min -> trade allowed; step-scaled 5,000 -> 5 shares.
+    assert len(plan.orders) == 1
+    assert plan.orders[0].qty == Decimal("5")

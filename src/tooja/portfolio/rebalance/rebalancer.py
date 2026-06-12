@@ -11,7 +11,11 @@ Constraints:
   is derived from the exchange of the target symbols (via currency_of); the
   balance is then sliced to that currency. Note min_order_value's default
   (10000) is KRW-oriented; pass an appropriate value for USD accounts.
-- An order is dropped if its notional is below `min_order_value`.
+- A symbol is skipped when its full gap |target - actual| is below
+  `min_order_value`. The gap — not the step-scaled order notional — is what is
+  gated: with step_rate < 1 a smaller order may still be emitted, otherwise
+  gradual runs whose per-step amount falls under the minimum could never
+  converge.
 - `cash_buffer_rate` of the sleeve total (cash + current position value in the
   sleeve currency) is held aside (not invested).
 - execute() is phased: SELLs are submitted and confirmed first, then real cash
@@ -384,6 +388,8 @@ class Rebalancer:
         """Invest surplus cash above buffer into the sink symbol."""
         if self.cash_sink is None:
             return
+        if self.direction is RebalanceDirection.SELL_ONLY:
+            return  # the sink only ever adds BUY exposure — honor sell-only runs
 
         price = ctx.current_price.get(self.cash_sink)
         if price is None or price <= 0:
@@ -534,12 +540,11 @@ class Rebalancer:
         if not buys:
             return []
         balance = await self.broker.account.get_balance()
-        if plan.expected_cash is not None:
-            currency = plan.expected_cash.currency
-        elif balance.total_asset is not None:
-            currency = balance.total_asset.currency  # mirror _load_account
-        else:
-            currency = Currency.KRW
+        # Budget strictly in the sleeve currency (derived from the targets at
+        # construction). balance.total_asset is the whole-account FX rollup —
+        # taking the budget currency from it would spend e.g. a KRW cash figure
+        # against USD-priced buys on a multi-currency account.
+        currency = self.currency
         available = next(
             (m.amount for m in balance.cash if m.currency == currency), Decimal(0)
         )
