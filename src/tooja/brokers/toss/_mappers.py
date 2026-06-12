@@ -195,18 +195,17 @@ def position_from_holding(item: HoldingsItem) -> Position:
     )
 
 
-def balance_from_holdings(o: HoldingsOverview) -> Balance:
-    # total_asset is the KRW-denominated holdings market value. Toss returns no
-    # cash with holdings (cash buying power is a separate endpoint), so cash=[]
-    # and we expose only the KRW market value here. Per-position currency is
-    # preserved on each Position.
+def balance_from_holdings(o: HoldingsOverview, cash: list[Money] | None = None) -> Balance:
+    # total_asset is the KRW-denominated holdings market value. Cash is the
+    # per-currency spendable amount (Toss buying-power endpoint), passed in by
+    # the account client; positions keep their own per-currency Money.
     total_asset: Money | None = None
     krw = o.market_value.amount.krw
     if krw is not None:
         total_asset = Money(amount=krw, currency=Currency.KRW)
     return Balance(
         total_asset=total_asset,
-        cash=[],
+        cash=cash or [],
         positions=[position_from_holding(item) for item in o.items],
         raw=o.model_dump(by_alias=True),
     )

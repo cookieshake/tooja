@@ -34,3 +34,4 @@ class RebalancePlan(BaseModel):
     expected_drift: Decimal
     expected_holdings: list[ExpectedHolding] = []
     expected_cash: Money | None = None
+    expected_total: Money | None = None

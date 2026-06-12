@@ -191,3 +191,167 @@ def test_quote_from_ws_record():
     assert q is not None
     assert q.price.amount == Decimal("70000")
     assert q.symbol.ticker == "005930"
+
+
+def test_present_balance_response_parses_item_rows():
+    from tooja.brokers.kis.raw.overseas_stock_trading.inquire_present_balance import (
+        InquirePresentBalanceResponse,
+    )
+    resp = InquirePresentBalanceResponse.model_validate({
+        "rt_cd": "0", "msg_cd": "X", "msg1": "ok",
+        "output1": [{"pdno": "AAPL", "ovrs_excg_cd": "NASD", "buy_crcy_cd": "USD",
+                     "ccld_qty_smtl1": "12", "cblc_qty13": "10",
+                     "avg_unpr3": "150", "ovrs_now_pric1": "200",
+                     "frcr_evlu_amt2": "2000", "evlu_pfls_amt2": "500", "evlu_pfls_rt1": "33.3"}],
+        "output2": [{"crcy_cd": "USD", "frcr_dncl_amt_2": "2000"}],
+        "output3": {"tot_asst_amt": "5000000"},
+    })
+    assert resp.output1[0].pdno == "AAPL"
+    assert resp.output1[0].ovrs_excg_cd == "NASD"
+    assert resp.output2[0].crcy_cd == "USD"
+    assert resp.output3.tot_asst_amt == "5000000"
+
+
+def _present_balance_resp():
+    from tooja.brokers.kis.raw.overseas_stock_trading.inquire_present_balance import (
+        InquirePresentBalanceResponse,
+    )
+    return InquirePresentBalanceResponse.model_validate({
+        "rt_cd": "0", "msg_cd": "X", "msg1": "ok",
+        "output1": [{"pdno": "AAPL", "ovrs_excg_cd": "NASD", "buy_crcy_cd": "USD",
+                     "ccld_qty_smtl1": "12", "cblc_qty13": "10",
+                     "avg_unpr3": "150", "ovrs_now_pric1": "200",
+                     "frcr_evlu_amt2": "2000", "evlu_pfls_amt2": "500", "evlu_pfls_rt1": "33.3"}],
+        "output2": [{"crcy_cd": "USD", "frcr_dncl_amt_2": "2000"},
+                    {"crcy_cd": "HKD", "frcr_dncl_amt_2": "0"}],
+        "output3": {"tot_asst_amt": "5000000"},
+    })
+
+
+def test_balance_from_present_balance_maps_cash_positions_total():
+    from decimal import Decimal
+    from tooja.brokers.kis._mappers import balance_from_present_balance
+    from tooja.core.enums import Currency, Exchange
+    bal = balance_from_present_balance(_present_balance_resp())
+    by_ccy = {m.currency: m.amount for m in bal.cash}
+    assert by_ccy[Currency.USD] == Decimal("2000")
+    assert by_ccy[Currency.HKD] == Decimal("0")
+    assert len(bal.positions) == 1
+    pos = bal.positions[0]
+    assert pos.symbol.ticker == "AAPL"
+    assert pos.symbol.exchange == Exchange.NASD
+    assert pos.avg_price.currency == Currency.USD
+    # Execution-basis (ccld_qty_smtl1=12) wins over settlement-basis (cblc_qty13=10).
+    assert pos.qty == Decimal("12")
+    assert bal.total_asset.amount == Decimal("5000000")
+    assert bal.total_asset.currency == Currency.KRW
+
+
+def test_present_balance_qty_falls_back_to_cblc_when_ccld_absent():
+    from decimal import Decimal
+    from tooja.brokers.kis._mappers import position_from_present_balance_row
+    from tooja.brokers.kis.raw.overseas_stock_trading.inquire_present_balance import (
+        InquirePresentBalanceResponse_Output1Item,
+    )
+    item = InquirePresentBalanceResponse_Output1Item.model_validate(
+        {"pdno": "AAPL", "ovrs_excg_cd": "NASD", "buy_crcy_cd": "USD",
+         "cblc_qty13": "7", "avg_unpr3": "150"}  # no ccld_qty_smtl1
+    )
+    pos = position_from_present_balance_row(item)
+    assert pos.qty == Decimal("7")
+
+
+def test_balance_from_present_balance_raises_on_unmapped_exchange():
+    import pytest
+    from tooja.brokers.kis._mappers import balance_from_present_balance
+    from tooja.brokers.kis.raw.overseas_stock_trading.inquire_present_balance import (
+        InquirePresentBalanceResponse,
+    )
+    resp = InquirePresentBalanceResponse.model_validate({
+        "rt_cd": "0", "msg_cd": "X", "msg1": "ok",
+        "output1": [{"pdno": "ZZZ", "ovrs_excg_cd": "XXXX", "buy_crcy_cd": "USD",
+                     "ccld_qty_smtl1": "5", "avg_unpr3": "10"}],
+        "output2": [], "output3": {"tot_asst_amt": "0"},
+    })
+    # A held position on an unmapped exchange must NOT vanish silently.
+    with pytest.raises(ValueError, match="unmapped exchange code"):
+        balance_from_present_balance(resp)
+
+
+def test_present_balance_strips_padded_codes():
+    """KIS pads fixed-length code fields; padded currency/exchange must still parse."""
+    from decimal import Decimal
+    from tooja.brokers.kis._mappers import balance_from_present_balance
+    from tooja.core.enums import Currency, Exchange
+    from tooja.brokers.kis.raw.overseas_stock_trading.inquire_present_balance import (
+        InquirePresentBalanceResponse,
+    )
+    resp = InquirePresentBalanceResponse.model_validate({
+        "rt_cd": "0", "msg_cd": "X", "msg1": "ok",
+        "output1": [{"pdno": "AAPL ", "ovrs_excg_cd": "NASD", "buy_crcy_cd": "USD ",
+                     "ccld_qty_smtl1": "3", "avg_unpr3": "100"}],
+        "output2": [{"crcy_cd": "USD ", "frcr_dncl_amt_2": "500"}],
+        "output3": {"tot_asst_amt": "0"},
+    })
+    bal = balance_from_present_balance(resp)
+    assert {m.currency: m.amount for m in bal.cash}[Currency.USD] == Decimal("500")
+    pos = bal.positions[0]
+    assert pos.symbol.ticker == "AAPL"
+    assert pos.symbol.exchange == Exchange.NASD
+    assert pos.avg_price.currency == Currency.USD
+
+
+def test_balance_from_present_balance_raises_on_unmapped_cash_currency():
+    import pytest
+    from tooja.brokers.kis._mappers import balance_from_present_balance
+    from tooja.brokers.kis.raw.overseas_stock_trading.inquire_present_balance import (
+        InquirePresentBalanceResponse,
+    )
+    resp = InquirePresentBalanceResponse.model_validate({
+        "rt_cd": "0", "msg_cd": "X", "msg1": "ok",
+        "output1": [],
+        "output2": [{"crcy_cd": "ZZZ", "frcr_dncl_amt_2": "100"}],
+        "output3": {"tot_asst_amt": "0"},
+    })
+    with pytest.raises(ValueError, match="unmapped currency code"):
+        balance_from_present_balance(resp)
+
+
+def test_merge_balances_concats_and_sums_total():
+    from decimal import Decimal
+    from tooja.brokers.kis._mappers import merge_balances
+    from tooja.core.enums import Currency
+    from tooja.core.models import Balance
+    from tooja.core.money import Money
+    dom = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("500000"), currency=Currency.KRW)],
+        positions=[],
+    )
+    ovs = Balance(
+        total_asset=Money(amount=Decimal("5000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("2000"), currency=Currency.USD)],
+        positions=[],
+    )
+    merged = merge_balances(dom, ovs)
+    by_ccy = {m.currency: m.amount for m in merged.cash}
+    assert by_ccy[Currency.KRW] == Decimal("500000")
+    assert by_ccy[Currency.USD] == Decimal("2000")
+    assert merged.total_asset.amount == Decimal("6000000")
+    assert merged.total_asset.currency == Currency.KRW
+
+
+def test_merge_balances_rejects_mismatched_total_currencies():
+    from decimal import Decimal
+
+    import pytest
+
+    from tooja.brokers.kis._mappers import merge_balances
+    from tooja.core.enums import Currency
+    from tooja.core.models import Balance
+    from tooja.core.money import Money
+
+    dom = Balance(total_asset=Money(amount=Decimal("1"), currency=Currency.KRW), cash=[], positions=[])
+    ovs = Balance(total_asset=Money(amount=Decimal("1"), currency=Currency.USD), cash=[], positions=[])
+    with pytest.raises(ValueError, match="cannot merge total_asset across currencies"):
+        merge_balances(dom, ovs)

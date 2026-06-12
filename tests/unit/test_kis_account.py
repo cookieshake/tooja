@@ -81,3 +81,109 @@ async def test_get_sellable_quantity_list_output1(monkeypatch):
     finally:
         await broker.close()
     assert qty == Decimal("7")
+
+
+def _make_kis_account(monkeypatch, domestic, overseas):
+    client = KisAccountClient.__new__(KisAccountClient)
+    client._broker = object()
+
+    async def fake_iterate(self):
+        return domestic  # (output1, output2) tuple
+
+    async def fake_overseas(self):
+        return overseas  # a Balance
+
+    monkeypatch.setattr(KisAccountClient, "_iterate_balance", fake_iterate)
+    monkeypatch.setattr(KisAccountClient, "_overseas_balance", fake_overseas)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_get_balance_merges_domestic_and_overseas(monkeypatch):
+    from tooja.core.models import Balance
+
+    class _Out2:
+        dnca_tot_amt = "500000"
+        tot_evlu_amt = "1000000"
+
+    overseas = Balance(
+        total_asset=Money(amount=Decimal("5000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("2000"), currency=Currency.USD)],
+        positions=[],
+    )
+    client = _make_kis_account(monkeypatch, domestic=([], [_Out2()]), overseas=overseas)
+
+    bal = await client.get_balance()
+    by_ccy = {m.currency: m.amount for m in bal.cash}
+    assert by_ccy[Currency.KRW] == Decimal("500000")
+    assert by_ccy[Currency.USD] == Decimal("2000")
+    assert bal.total_asset.amount == Decimal("6000000")  # 1,000,000 + 5,000,000
+
+
+@pytest.mark.asyncio
+async def test_get_balance_propagates_overseas_failure(monkeypatch):
+    async def fake_iterate(self):
+        return ([], [])
+
+    async def boom(self):
+        raise RuntimeError("overseas down")
+
+    monkeypatch.setattr(KisAccountClient, "_iterate_balance", fake_iterate)
+    monkeypatch.setattr(KisAccountClient, "_overseas_balance", boom)
+
+    client = KisAccountClient.__new__(KisAccountClient)
+    client._broker = object()
+    with pytest.raises(RuntimeError, match="overseas down"):
+        await client.get_balance()
+
+
+@pytest.mark.asyncio
+async def test_overseas_balance_degrades_when_not_enrolled(monkeypatch):
+    """A not-enrolled overseas service (PermissionDenied) degrades, not fails."""
+    from tooja.core.errors import PermissionDenied
+    from tooja.core.models import Balance
+
+    async def denied(broker, executor_cls, request, *, tr_id=None, extra_headers=None):
+        raise PermissionDenied("overseas service not enrolled", broker="kis")
+
+    monkeypatch.setattr(account_mod, "call", denied)
+    broker = _broker()
+    await broker.open()
+    try:
+        bal = await KisAccountClient(broker)._overseas_balance()
+    finally:
+        await broker.close()
+
+    assert isinstance(bal, Balance)
+    assert bal.cash == []
+    assert bal.positions == []
+    assert bal.raw == {"overseas_skipped": "permission_denied"}
+
+
+@pytest.mark.asyncio
+async def test_get_balance_degrades_to_domestic_when_overseas_not_enrolled(monkeypatch):
+    """End-to-end: PermissionDenied overseas yields a domestic-only balance."""
+    async def fake_iterate(self):
+        class _Out2:
+            dnca_tot_amt = "500000"
+            tot_evlu_amt = "1000000"
+        return ([], [_Out2()])
+
+    async def denied(broker, executor_cls, request, *, tr_id=None, extra_headers=None):
+        from tooja.core.errors import PermissionDenied
+        raise PermissionDenied("overseas service not enrolled", broker="kis")
+
+    monkeypatch.setattr(KisAccountClient, "_iterate_balance", fake_iterate)
+    monkeypatch.setattr(account_mod, "call", denied)
+
+    broker = _broker()
+    await broker.open()
+    try:
+        bal = await KisAccountClient(broker).get_balance()
+    finally:
+        await broker.close()
+
+    by_ccy = {m.currency: m.amount for m in bal.cash}
+    assert by_ccy[Currency.KRW] == Decimal("500000")
+    assert Currency.USD not in by_ccy  # overseas skipped
+    assert bal.total_asset.amount == Decimal("1000000")  # domestic only

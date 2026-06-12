@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from tooja.brokers.toss._call import call
-from tooja.brokers.toss._mappers import balance_from_holdings, position_from_holding
+from tooja.brokers.toss._mappers import balance_from_holdings, position_from_holding, to_currency
 from tooja.brokers.toss.raw.asset.get_holdings import GetHoldingsExecutor
 from tooja.brokers.toss.raw.order_info.get_buying_power import GetBuyingPowerExecutor
 from tooja.brokers.toss.raw.order_info.get_sellable_quantity import GetSellableQuantityExecutor
@@ -39,7 +40,19 @@ class TossAccountClient(AccountClient):
 
     async def get_balance(self) -> Balance:
         resp = await call(self._broker, GetHoldingsExecutor)
-        return balance_from_holdings(resp)
+        # Query every currency Toss supports, not just the ones with holdings:
+        # USD cash held with no US position (just exchanged, or fully exited a
+        # US sleeve) must still surface, otherwise a USD-sleeve rebalancer reads
+        # zero cash and can never bootstrap. Union in any holdings currency so a
+        # future third currency is picked up automatically.
+        currencies = {Currency.KRW, Currency.USD}
+        currencies.update(
+            to_currency(i.currency) for i in resp.items if i.currency is not None
+        )
+        cash = await asyncio.gather(
+            *(self.get_buying_power(currency=c) for c in currencies)
+        )
+        return balance_from_holdings(resp, cash=list(cash))
 
     # ------------------------------------------------------------------
     # get_positions

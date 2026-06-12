@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from tooja.brokers.kis._call import call
-from tooja.brokers.kis._mappers import _dec, balance_from_inquire, position_from_balance_row
+from tooja.brokers.kis._mappers import (
+    _dec,
+    balance_from_inquire,
+    balance_from_present_balance,
+    merge_balances,
+    position_from_balance_row,
+)
 from tooja.brokers.kis.raw.domestic_stock_trading.inquire_balance import (
     InquireBalanceExecutor,
     InquireBalanceRequest,
+)
+from tooja.brokers.kis.raw.overseas_stock_trading.inquire_present_balance import (
+    InquirePresentBalanceExecutor,
+    InquirePresentBalanceRequest,
 )
 from tooja.brokers.kis.raw.domestic_stock_trading.inquire_psbl_order import (
     InquirePsblOrderExecutor,
@@ -21,7 +32,7 @@ from tooja.brokers.kis.raw.domestic_stock_trading.inquire_psbl_sell import (
 )
 from tooja.core.clients import AccountClient
 from tooja.core.enums import Currency
-from tooja.core.errors import UnsupportedOperation
+from tooja.core.errors import PermissionDenied, UnsupportedOperation
 from tooja.core.models import Balance, Position, Symbol
 from tooja.core.money import Money
 
@@ -40,8 +51,40 @@ class KisAccountClient(AccountClient):
         self._broker = broker
 
     async def get_balance(self) -> Balance:
+        # No return_exceptions=True on purpose: an overseas-call failure must
+        # propagate, not silently degrade to a domestic-only balance (which would
+        # make a foreign-currency sleeve read "no cash" and mis-trade).
+        domestic, overseas = await asyncio.gather(
+            self._domestic_balance(),
+            self._overseas_balance(),
+        )
+        return merge_balances(domestic, overseas)
+
+    async def _domestic_balance(self) -> Balance:
         rows, summaries = await self._iterate_balance()
         return balance_from_inquire(rows, summaries, raw={"page_count": len(rows)})
+
+    async def _overseas_balance(self) -> Balance:
+        """Single-call overseas snapshot (no pagination; NATN_CD=000 = all)."""
+        creds = self._broker.credentials
+        req = InquirePresentBalanceRequest(
+            CANO=creds.cano,
+            ACNT_PRDT_CD=creds.acnt_prdt_cd,
+            WCRC_FRCR_DVSN_CD="02",  # 외화
+            NATN_CD="000",           # 전체 국가
+            TR_MKET_CD="00",         # 전체 시장
+            INQR_DVSN_CD="00",       # 전체
+        )
+        try:
+            resp = await call(self._broker, InquirePresentBalanceExecutor, req)
+        except PermissionDenied:
+            # The overseas-stock service is not enrolled on this account. That is
+            # a permanent account-config state, not a transient outage, so we
+            # degrade to a domestic-only balance instead of failing get_balance
+            # outright (which would break pure-KRW callers). Every OTHER failure
+            # still propagates — see the comment in get_balance.
+            return Balance(raw={"overseas_skipped": "permission_denied"})
+        return balance_from_present_balance(resp)
 
     async def get_positions(self) -> list[Position]:
         rows, _ = await self._iterate_balance()

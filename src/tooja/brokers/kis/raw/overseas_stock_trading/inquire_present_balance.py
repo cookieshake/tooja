@@ -94,9 +94,9 @@ class InquirePresentBalanceResponse_Output3Item(KisBaseModel):
 class InquirePresentBalanceResponse(KisCommonResponse):
     """응답 본문."""
 
-    output1: list[str] = []  # 응답상세1 (체결기준 잔고) — 체결기준현재잔고 없으면 빈값으로 출력
-    output2: list[str] = []  # 응답상세2
-    output3: InquirePresentBalanceResponse_Output3Item | None = None  # 응답상세3
+    output1: list[InquirePresentBalanceResponse_Output1Item] = []  # 체결기준 잔고
+    output2: list[InquirePresentBalanceResponse_Output2Item] = []  # 통화별 요약
+    output3: InquirePresentBalanceResponse_Output3Item | None = None  # 계좌 요약
 
 class InquirePresentBalanceExecutor(ApiExecutor[InquirePresentBalanceRequest, InquirePresentBalanceResponse]):
     """해외주식 체결기준현재잔고[v1_해외주식-008]."""

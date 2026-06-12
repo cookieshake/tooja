@@ -184,18 +184,29 @@ async def test_inquire_balance_request_includes_ofl_yn():
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        captured["query"] = dict(request.url.params)
+        if "domestic-stock" in request.url.path:
+            # Domestic inquire-balance — capture query params for assertion.
+            captured["query"] = dict(request.url.params)
+            return httpx.Response(200, json={
+                "rt_cd": "0",
+                "msg_cd": "MCA00000",
+                "msg1": "OK",
+                "ctx_area_fk100": "",
+                "ctx_area_nk100": "",
+                "output1": [],
+                "output2": [{
+                    "dnca_tot_amt": "100000000",
+                    "tot_evlu_amt": "100000000",
+                }],
+            })
+        # Overseas inquire-present-balance — return empty valid response.
         return httpx.Response(200, json={
             "rt_cd": "0",
             "msg_cd": "MCA00000",
             "msg1": "OK",
-            "ctx_area_fk100": "",
-            "ctx_area_nk100": "",
             "output1": [],
-            "output2": [{
-                "dnca_tot_amt": "100000000",
-                "tot_evlu_amt": "100000000",
-            }],
+            "output2": [],
+            "output3": None,
         })
 
     broker = _broker(env="demo")

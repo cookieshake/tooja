@@ -953,3 +953,155 @@ def fill_from_daily_ccld_row(item: Any, raw_row: dict[str, Any]) -> "Fill | None
         symbol=Symbol(ticker=ticker, exchange=Exchange.KRX),
         side=side, qty=qty, price=avg, time=when, raw=raw_row,
     )
+
+
+# ─── Overseas present-balance ────────────────────────────────────────────────
+
+
+def _money_ccy(amount: Any, currency_code: str | None) -> Money | None:
+    """Foreign-currency Money from a KIS string amount + currency code.
+
+    Returns None when the amount is absent — used for *optional* fields
+    (current_price, market_value, pnl). Required fields validate the currency
+    via `_require_currency` instead, which raises on an unmapped code.
+    """
+    amt = _dec(amount)
+    if amt is None or not currency_code:
+        return None
+    try:
+        # KIS pads fixed-length code fields with trailing spaces ('USD ').
+        ccy = Currency(currency_code.strip())
+    except ValueError:
+        return None
+    return Money(amount=amt, currency=ccy)
+
+
+def _require_currency(currency_code: str | None, *, context: str) -> Currency:
+    """Resolve a KIS currency code, raising loudly on an unmapped/missing one.
+
+    A silently-dropped cash or position row vanishes from both the sleeve total
+    and the held-quantity map, which makes the rebalancer re-buy something it
+    already owns. So unmapped currencies fail rather than degrade — mirroring
+    `currency_of`'s KeyError philosophy.
+    """
+    # KIS pads fixed-length code fields with trailing spaces ('USD '); strip
+    # before the enum lookup so padding doesn't turn into a spurious raise.
+    code = currency_code.strip() if currency_code else currency_code
+    try:
+        return Currency(code)  # Currency(None) also raises ValueError
+    except ValueError as e:
+        raise ValueError(
+            f"KIS overseas {context} has unmapped currency code {currency_code!r}"
+        ) from e
+
+
+def position_from_present_balance_row(item: Any) -> Position | None:
+    """One overseas present-balance output1 row -> Position (foreign currency).
+
+    Quantity is execution-basis (`ccld_qty_smtl1`, 체결기준 현재 보유수량) so
+    same-day fills/sells are reflected; this prevents a same-day rebalance re-run
+    from re-buying a holding still inside the T+1 settlement window. Falls back to
+    the settlement-basis `cblc_qty13` only when the execution field is absent.
+    """
+    qty = _dec(getattr(item, "ccld_qty_smtl1", None))
+    if qty is None:
+        qty = _dec(getattr(item, "cblc_qty13", None))
+    if qty is None or qty == 0:
+        return None
+    # KIS pads fixed-length code fields with trailing spaces; strip so the enum
+    # lookups (and the symbol ticker) don't carry padding.
+    ticker = (getattr(item, "pdno", None) or "").strip() or None
+    excg = (getattr(item, "ovrs_excg_cd", None) or "").strip() or None
+    ccy = getattr(item, "buy_crcy_cd", None)
+    if not ticker or not excg:
+        return None
+    try:
+        exchange = Exchange(excg)
+    except ValueError as e:
+        # Unmapped exchange code: raise rather than silently drop a held position.
+        raise ValueError(
+            f"KIS overseas position {ticker} has unmapped exchange code {excg!r}"
+        ) from e
+    currency = _require_currency(ccy, context=f"position {ticker}")
+    avg_amt = _dec(getattr(item, "avg_unpr3", None))
+    if avg_amt is None:
+        raise ValueError(
+            f"KIS overseas position {ticker} (qty {qty}) has no average price"
+        )
+    return Position(
+        symbol=Symbol(ticker=ticker, exchange=exchange),
+        qty=qty,
+        avg_price=Money(amount=avg_amt, currency=currency),
+        current_price=_money_ccy(getattr(item, "ovrs_now_pric1", None), ccy),
+        market_value=_money_ccy(getattr(item, "frcr_evlu_amt2", None), ccy),
+        pnl=_money_ccy(getattr(item, "evlu_pfls_amt2", None), ccy),
+        pnl_rate=_dec(getattr(item, "evlu_pfls_rt1", None)),
+    )
+
+
+def balance_from_present_balance(resp: Any) -> Balance:
+    """Overseas inquire-present-balance -> Balance (foreign cash + positions).
+
+    output2 -> per-currency cash (crcy_cd + frcr_dncl_amt_2).
+    output1 -> positions (foreign currency, ovrs_excg_cd -> Exchange).
+    output3.tot_asst_amt -> overseas total, KRW-converted.
+    """
+    cash: list[Money] = []
+    for row in getattr(resp, "output2", None) or []:
+        amt = _dec(getattr(row, "frcr_dncl_amt_2", None))
+        if amt is None:
+            continue  # blank filler row with no deposit amount
+        # A zero foreign deposit is a meaningful state (a held currency with no
+        # spendable cash), so zero-amount rows are kept — unlike zero-qty
+        # positions, which are dropped. An unmapped currency raises rather than
+        # silently dropping real cash.
+        ccy = _require_currency(getattr(row, "crcy_cd", None), context="cash row")
+        cash.append(Money(amount=amt, currency=ccy))
+    positions = [
+        p
+        for p in (position_from_present_balance_row(r) for r in (getattr(resp, "output1", None) or []))
+        if p is not None
+    ]
+    total: Money | None = None
+    out3 = getattr(resp, "output3", None)
+    if out3 is not None:
+        total = _money_krw(getattr(out3, "tot_asst_amt", None))
+    raw = resp.model_dump(by_alias=True) if hasattr(resp, "model_dump") else {}
+    return Balance(
+        total_asset=total, cash=cash, positions=positions, raw=raw,
+    )
+
+
+def merge_balances(domestic: Balance, overseas: Balance) -> Balance:
+    """Merge two single-call Balances into one.
+
+    Cash is summed per currency, positions are concatenated, and total_asset
+    is summed (both are expected to be KRW-base).
+    """
+    by_ccy: dict = {}
+    for m in list(domestic.cash) + list(overseas.cash):
+        by_ccy[m.currency] = by_ccy.get(m.currency, Decimal(0)) + m.amount
+    cash = [Money(amount=a, currency=c) for c, a in by_ccy.items()]
+    totals = [b.total_asset for b in (domestic, overseas) if b.total_asset is not None]
+    total: Money | None = None
+    if totals:
+        # KIS reports both domestic tot_evlu_amt and overseas tot_asst_amt in KRW,
+        # so summing amounts and taking the first currency is sound. Guard loudly
+        # if a non-KRW total ever slips in — summing across currencies would
+        # silently produce a wrong number; it would need an FX step instead.
+        currencies = {t.currency for t in totals}
+        if len(currencies) > 1:
+            raise ValueError(
+                f"cannot merge total_asset across currencies "
+                f"{sorted(c.value for c in currencies)} — both are expected in KRW base"
+            )
+        total = Money(
+            amount=sum((t.amount for t in totals), Decimal(0)),
+            currency=totals[0].currency,
+        )
+    return Balance(
+        total_asset=total,
+        cash=cash,
+        positions=list(domestic.positions) + list(overseas.positions),
+        raw={"domestic": domestic.raw, "overseas": overseas.raw},
+    )
