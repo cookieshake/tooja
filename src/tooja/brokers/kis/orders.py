@@ -41,6 +41,10 @@ from tooja.brokers.kis.raw.overseas_stock_trading.order import (
     OrderExecutor as OvrsOrderExecutor,
     OrderRequest as OvrsOrderRequest,
 )
+from tooja.brokers.kis.raw.overseas_stock_trading.order_rvsecncl import (
+    OrderRvsecnclExecutor as OvrsRvsecnclExecutor,
+    OrderRvsecnclRequest as OvrsRvsecnclRequest,
+)
 from tooja.core.clients import OrdersClient
 from tooja.core.enums import Exchange, OrderSide, OrderStatus, TimeInForce
 from tooja.core.errors import OrderNotFound, OrderRejected, UnsupportedOperation
@@ -248,6 +252,10 @@ class KisOrdersClient(OrdersClient):
         new_qty: Decimal | None,
         new_price: Decimal | None,
     ) -> Order:
+        if _is_overseas(existing.symbol.exchange):
+            return await self._rvsecncl_overseas(
+                existing, dvsn=dvsn, new_qty=new_qty, new_price=new_price,
+            )
         creds = self._broker.credentials
         # KRX_FWDG_ORD_ORGNO source differs by how `existing` was built:
         #   - create() stores it under "krx_fwdg_ord_orgno"
@@ -297,6 +305,66 @@ class KisOrdersClient(OrdersClient):
             "price": existing.price if new_price is None else existing.price.model_copy(
                 update={"amount": new_price}
             ) if existing.price else None,
+            "status": new_status,
+            "raw": {**existing.raw, "rvsecncl_dvsn": dvsn},
+        })
+
+    async def _rvsecncl_overseas(
+        self,
+        existing: Order,
+        *,
+        dvsn: str,
+        new_qty: Decimal | None,
+        new_price: Decimal | None,
+    ) -> Order:
+        # SHA/SZN/VN are cancel-only per the KIS TR list — a replace is still
+        # sent and KIS's rejection propagates; no client-side pre-block.
+        creds = self._broker.credentials
+        if dvsn == "02" and new_qty is None:
+            # The overseas API has no QTY_ALL_ORD_YN — cancel the unfilled
+            # remainder explicitly.
+            remaining = existing.qty - existing.filled_qty
+            eff_qty: Decimal = remaining if remaining > 0 else existing.qty
+        else:
+            eff_qty = new_qty if new_qty is not None else existing.qty
+        if dvsn == "02":
+            eff_price = Decimal(0)  # spec: cancel sends "0"
+        else:
+            eff_price = new_price if new_price is not None else (
+                existing.price.amount if existing.price is not None else Decimal(0)
+            )
+        raw_req = OvrsRvsecnclRequest(
+            CANO=creds.cano,
+            ACNT_PRDT_CD=creds.acnt_prdt_cd,
+            OVRS_EXCG_CD=existing.symbol.exchange.value,
+            PDNO=existing.symbol.ticker,
+            ORGN_ODNO=existing.order_id,
+            RVSE_CNCL_DVSN_CD=dvsn,
+            ORD_QTY=str(eff_qty),
+            OVRS_ORD_UNPR=str(eff_price),
+            ORD_SVR_DVSN_CD="0",
+        )
+        tr_id = _ovrs_rvsecncl_tr_id(
+            existing.symbol.exchange, self._broker.is_virtual,
+        )
+        resp = await call(self._broker, OvrsRvsecnclExecutor, raw_req, tr_id=tr_id)
+        out = getattr(resp, "output", None)
+        head = out[0] if isinstance(out, list) and out else (
+            out if not isinstance(out, list) else None
+        )
+        if head is None or not getattr(head, "ODNO", None):
+            raise OrderRejected(
+                f"KIS overseas order-rvsecncl returned no ODNO (dvsn={dvsn})",
+                broker="kis", endpoint=OvrsRvsecnclExecutor.PATH,
+            )
+        new_status = OrderStatus.CANCELLED if dvsn == "02" else OrderStatus.OPEN
+        return existing.model_copy(update={
+            "order_id": head.ODNO,
+            "qty": eff_qty,
+            "price": existing.price if new_price is None else (
+                existing.price.model_copy(update={"amount": new_price})
+                if existing.price else None
+            ),
             "status": new_status,
             "raw": {**existing.raw, "rvsecncl_dvsn": dvsn},
         })

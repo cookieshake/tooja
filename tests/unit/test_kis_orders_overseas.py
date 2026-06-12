@@ -172,3 +172,70 @@ async def test_create_domestic_still_routes_to_order_cash(monkeypatch):
     (c,) = calls
     assert c.executor.PATH.endswith("/order-cash")
     assert c.tr_id == "TTTC0012U"
+
+
+# ─── cancel / replace routing ────────────────────────
+
+from datetime import datetime, timezone
+
+from tooja.core.models import Order
+
+
+def _ovrs_order(qty="5", filled="2", price="145.00"):
+    return Order(
+        order_id="0030089601",
+        symbol=Symbol.parse("NASD:AAPL"),
+        side=OrderSide.BUY,
+        qty=Decimal(qty), filled_qty=Decimal(filled),
+        type="limit",
+        price=Money(amount=Decimal(price), currency=Currency.USD),
+        status=OrderStatus.PARTIALLY_FILLED,
+        submitted_at=datetime(2026, 6, 12, 1, 0, tzinfo=timezone.utc),
+        raw={},
+    )
+
+
+def _patch_get(monkeypatch, order):
+    async def fake_get(self, order_id):
+        assert order_id == order.order_id
+        return order
+
+    monkeypatch.setattr(orders_mod.KisOrdersClient, "get", fake_get)
+
+
+@pytest.mark.asyncio
+async def test_cancel_overseas_sends_remaining_qty(monkeypatch):
+    order = _ovrs_order(qty="5", filled="2")
+    _patch_get(monkeypatch, order)
+    calls = _capture_call(monkeypatch, _ovrs_create_head())
+    client = orders_mod.KisOrdersClient(_broker())
+
+    result = await client.cancel(order.order_id)
+
+    (c,) = calls
+    assert c.executor.PATH == "/uapi/overseas-stock/v1/trading/order-rvsecncl"
+    assert c.tr_id == "TTTT1004U"
+    assert c.request.OVRS_EXCG_CD == "NASD"
+    assert c.request.PDNO == "AAPL"
+    assert c.request.ORGN_ODNO == order.order_id
+    assert c.request.RVSE_CNCL_DVSN_CD == "02"
+    assert c.request.ORD_QTY == "3"            # 5 ordered - 2 filled
+    assert c.request.OVRS_ORD_UNPR == "0"      # cancel sends "0"
+    assert result.status is OrderStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_replace_overseas_sends_new_price(monkeypatch):
+    order = _ovrs_order()
+    _patch_get(monkeypatch, order)
+    calls = _capture_call(monkeypatch, _ovrs_create_head())
+    client = orders_mod.KisOrdersClient(_broker())
+
+    result = await client.replace(order.order_id, price=Decimal("150.50"))
+
+    (c,) = calls
+    assert c.request.RVSE_CNCL_DVSN_CD == "01"
+    assert c.request.ORD_QTY == "5"
+    assert c.request.OVRS_ORD_UNPR == "150.50"
+    assert result.price.amount == Decimal("150.50")
+    assert result.status is OrderStatus.OPEN
