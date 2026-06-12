@@ -14,6 +14,7 @@ cancel/replace: order-rvsecncl, RVSE_CNCL_DVSN_CD = 02 (cancel) / 01 (replace).
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, AsyncIterator, Literal
@@ -21,9 +22,11 @@ from typing import TYPE_CHECKING, AsyncIterator, Literal
 from tooja.brokers.kis._call import call
 from tooja.brokers.kis._mappers import (
     fill_from_daily_ccld_row,
+    fill_from_ovrs_ccnl_row,
     kis_ord_dvsn,
     kst_today,
     order_from_daily_ccld_row,
+    order_from_ovrs_ccnl_row,
 )
 from tooja.brokers.kis.raw.domestic_stock_trading.inquire_daily_ccld import (
     InquireDailyCcldExecutor,
@@ -37,6 +40,10 @@ from tooja.brokers.kis.raw.domestic_stock_trading.order_rvsecncl import (
     OrderRvsecnclExecutor,
     OrderRvsecnclRequest,
 )
+from tooja.brokers.kis.raw.overseas_stock_trading.inquire_ccnl import (
+    InquireCcnlExecutor as OvrsInquireCcnlExecutor,
+    InquireCcnlRequest as OvrsInquireCcnlRequest,
+)
 from tooja.brokers.kis.raw.overseas_stock_trading.order import (
     OrderExecutor as OvrsOrderExecutor,
     OrderRequest as OvrsOrderRequest,
@@ -47,7 +54,12 @@ from tooja.brokers.kis.raw.overseas_stock_trading.order_rvsecncl import (
 )
 from tooja.core.clients import OrdersClient
 from tooja.core.enums import Exchange, OrderSide, OrderStatus, TimeInForce
-from tooja.core.errors import OrderNotFound, OrderRejected, UnsupportedOperation
+from tooja.core.errors import (
+    OrderNotFound,
+    OrderRejected,
+    PermissionDenied,
+    UnsupportedOperation,
+)
 from tooja.core.markets import currency_of
 from tooja.core.models import Fill, Order, OrderRequest, Symbol
 
@@ -370,14 +382,19 @@ class KisOrdersClient(OrdersClient):
         })
 
     async def get(self, order_id: str) -> Order:
-        # KIS inquire-daily-ccld supports ODNO filtering — one call beats
-        # walking up to 50 paginated pages of every order in the window.
-        rows = await self._iter_ccld(
+        # Domestic inquire-daily-ccld supports server-side ODNO filtering;
+        # the overseas inquire-ccnl does not (the spec mandates an empty
+        # ODNO), so overseas rows are matched client-side.
+        dom_rows, ovrs_rows = await self._gather_ccld_rows(
             symbol=None, since=None, until=None,
             status="all", only_filled=False, order_id=order_id,
         )
-        for row in rows:
+        for row in dom_rows:
             order = order_from_daily_ccld_row(row, row.model_dump())
+            if order is not None and order.order_id == order_id:
+                return order
+        for row in ovrs_rows:
+            order = order_from_ovrs_ccnl_row(row, row.model_dump())
             if order is not None and order.order_id == order_id:
                 return order
         raise OrderNotFound(
@@ -392,13 +409,24 @@ class KisOrdersClient(OrdersClient):
         since: date | datetime | None = None,
         until: date | datetime | None = None,
     ) -> list[Order]:
-        rows = await self._iter_ccld(
-            symbol=symbol, since=since, until=until, status=status, only_filled=False,
+        sym = _as_symbol(symbol) if symbol else None
+        dom_rows, ovrs_rows = await self._gather_ccld_rows(
+            symbol=sym, since=since, until=until,
+            status=status, only_filled=False,
         )
+        mapped = [order_from_daily_ccld_row(r, r.model_dump()) for r in dom_rows]
+        mapped += [order_from_ovrs_ccnl_row(r, r.model_dump()) for r in ovrs_rows]
         out: list[Order] = []
-        for row in rows:
-            order = order_from_daily_ccld_row(row, row.model_dump())
+        for order in mapped:
             if order is None:
+                continue
+            # Client-side filters back up the server-side ones: demo accounts
+            # can only query overseas wildcards, and the overseas endpoint
+            # cannot filter by status reliably.
+            if sym is not None and (
+                order.symbol.ticker != sym.ticker
+                or order.symbol.exchange != sym.exchange
+            ):
                 continue
             if status == "open" and order.status not in (
                 OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING,
@@ -422,14 +450,22 @@ class KisOrdersClient(OrdersClient):
         since: date | datetime | None = None,
         until: date | datetime | None = None,
     ) -> list[Fill]:
-        rows = await self._iter_ccld(
-            symbol=symbol, since=since, until=until, status="closed", only_filled=True,
+        sym = _as_symbol(symbol) if symbol else None
+        dom_rows, ovrs_rows = await self._gather_ccld_rows(
+            symbol=sym, since=since, until=until,
+            status="closed", only_filled=True,
         )
+        fills = [fill_from_daily_ccld_row(r, r.model_dump()) for r in dom_rows]
+        fills += [fill_from_ovrs_ccnl_row(r, r.model_dump()) for r in ovrs_rows]
         out: list[Fill] = []
-        for row in rows:
-            f = fill_from_daily_ccld_row(row, row.model_dump())
-            if f is not None:
-                out.append(f)
+        for f in fills:
+            if f is None:
+                continue
+            if sym is not None and (
+                f.symbol.ticker != sym.ticker or f.symbol.exchange != sym.exchange
+            ):
+                continue
+            out.append(f)
         return out
 
     async def iter_fills(self, **kwargs) -> AsyncIterator[Fill]:
@@ -494,6 +530,118 @@ class KisOrdersClient(OrdersClient):
             if guard > 50:
                 break
         return all_rows
+
+    async def _iter_ovrs_ccnl(
+        self,
+        *,
+        symbol: Symbol | str | None,
+        since: date | datetime | None,
+        until: date | datetime | None,
+        status: str,
+        only_filled: bool,
+    ) -> list:
+        creds = self._broker.credentials
+        today = kst_today()
+        start_d = _yyyymmdd(since) if since else _yyyymmdd(today)
+        end_d = _yyyymmdd(until) if until else _yyyymmdd(today)
+        sym = _as_symbol(symbol) if symbol else None
+        if self._broker.is_virtual:
+            # Demo accounts only accept the wildcard query (PDNO="",
+            # SLL_BUY_DVSN=00, CCLD_NCCS_DVSN=00); filtering happens
+            # client-side in the callers.
+            pdno, excg, ccld = "", "%", "00"
+        else:
+            pdno = sym.ticker if sym else "%"
+            excg = sym.exchange.value if sym else "%"
+            ccld = "01" if only_filled else ("02" if status == "open" else "00")
+
+        req = OvrsInquireCcnlRequest(
+            CANO=creds.cano,
+            ACNT_PRDT_CD=creds.acnt_prdt_cd,
+            PDNO=pdno,
+            ORD_STRT_DT=start_d,
+            ORD_END_DT=end_d,
+            SLL_BUY_DVSN="00",
+            CCLD_NCCS_DVSN=ccld,
+            OVRS_EXCG_CD=excg,
+            SORT_SQN="DS",
+            ORD_DT="",
+            ORD_GNO_BRNO="",
+            ODNO="",  # spec: ODNO search is not supported — must stay empty
+            CTX_AREA_NK200="",
+            CTX_AREA_FK200="",
+        )
+
+        all_rows: list = []
+        tr_cont = ""
+        guard = 0
+        while True:
+            extra = {"tr_cont": tr_cont} if tr_cont else None
+            resp = await call(
+                self._broker, OvrsInquireCcnlExecutor, req, extra_headers=extra,
+            )
+            all_rows.extend(getattr(resp, "output", []) or [])
+            hdr = getattr(resp, "headers", None)
+            nxt = getattr(hdr, "tr_cont", None) if hdr else None
+            if nxt not in ("F", "M"):
+                break
+            req = req.model_copy(update={
+                "CTX_AREA_FK200": getattr(resp, "ctx_area_fk200", "") or "",
+                "CTX_AREA_NK200": getattr(resp, "ctx_area_nk200", "") or "",
+            })
+            tr_cont = "N"
+            guard += 1
+            if guard > 50:
+                break
+        return all_rows
+
+    async def _gather_ccld_rows(
+        self,
+        *,
+        symbol: Symbol | str | None,
+        since: date | datetime | None,
+        until: date | datetime | None,
+        status: str,
+        only_filled: bool,
+        order_id: str | None = None,
+    ) -> tuple[list, list]:
+        """(domestic_rows, overseas_rows) per the routing rules."""
+        sym = _as_symbol(symbol) if symbol else None
+        if sym is not None and _is_overseas(sym.exchange):
+            # An EXPLICIT overseas query propagates PermissionDenied — a
+            # silent [] would misreport an unenrolled account as orderless.
+            rows = await self._iter_ovrs_ccnl(
+                symbol=sym, since=since, until=until,
+                status=status, only_filled=only_filled,
+            )
+            return [], rows
+        if sym is not None:
+            rows = await self._iter_ccld(
+                symbol=sym, since=since, until=until,
+                status=status, only_filled=only_filled, order_id=order_id,
+            )
+            return rows, []
+
+        async def ovrs_lenient() -> list:
+            # Same carve-out as KisAccountClient.get_balance: an account not
+            # enrolled for overseas trading is a permanent config state, so
+            # the implicit fan-out degrades to domestic-only.
+            try:
+                return await self._iter_ovrs_ccnl(
+                    symbol=None, since=since, until=until,
+                    status=status, only_filled=only_filled,
+                )
+            except PermissionDenied:
+                return []
+
+        dom_rows, ovrs_rows = await asyncio.gather(
+            self._iter_ccld(
+                symbol=None, since=since, until=until,
+                status=status, only_filled=only_filled, order_id=order_id,
+            ),
+            ovrs_lenient(),
+        )
+        return dom_rows, ovrs_rows
 
 
 def _parse_ord_tmd(s: str | None) -> datetime | None:

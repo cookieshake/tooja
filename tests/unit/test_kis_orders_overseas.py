@@ -239,3 +239,147 @@ async def test_replace_overseas_sends_new_price(monkeypatch):
     assert c.request.OVRS_ORD_UNPR == "150.50"
     assert result.price.amount == Decimal("150.50")
     assert result.status is OrderStatus.OPEN
+
+
+# ─── get / list_orders / list_fills fan-out ──────────
+
+from tooja.core.errors import PermissionDenied
+
+
+def _ovrs_ccnl_row(**over):
+    base = dict(
+        ord_dt="20260611", odno="OVRS1", orgn_odno=None,
+        sll_buy_dvsn_cd="02", rvse_cncl_dvsn=None,
+        pdno="AAPL", ft_ord_qty="5", ft_ord_unpr3="145.00",
+        ft_ccld_qty="2", ft_ccld_unpr3="144.90", nccs_qty="3",
+        prcs_stat_name="완료", rjct_rson="", ord_tmd="221500",
+        ovrs_excg_cd="NASD", tr_crcy_cd="USD",
+        dmst_ord_dt="20260612", thco_ord_tmd="071500",
+    )
+    base.update(over)
+    ns = SimpleNamespace(**base)
+    ns.model_dump = lambda: dict(base)
+    return ns
+
+
+def _patch_iter(monkeypatch, *, domestic_rows=(), ovrs_rows=(),
+                ovrs_exc=None):
+    async def fake_dom(self, **kw):
+        return list(domestic_rows)
+
+    async def fake_ovrs(self, **kw):
+        if ovrs_exc is not None:
+            raise ovrs_exc
+        return list(ovrs_rows)
+
+    monkeypatch.setattr(orders_mod.KisOrdersClient, "_iter_ccld", fake_dom)
+    monkeypatch.setattr(
+        orders_mod.KisOrdersClient, "_iter_ovrs_ccnl", fake_ovrs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_orders_merges_domestic_and_overseas(monkeypatch):
+    _patch_iter(monkeypatch, domestic_rows=[], ovrs_rows=[_ovrs_ccnl_row()])
+    client = orders_mod.KisOrdersClient(_broker())
+    orders = await client.list_orders()
+    assert [o.order_id for o in orders] == ["OVRS1"]
+    assert orders[0].symbol.exchange is Exchange.NASD
+
+
+@pytest.mark.asyncio
+async def test_list_orders_degrades_when_overseas_not_enrolled(monkeypatch):
+    _patch_iter(
+        monkeypatch, domestic_rows=[],
+        ovrs_exc=PermissionDenied("not enrolled", broker="kis"),
+    )
+    client = orders_mod.KisOrdersClient(_broker())
+    assert await client.list_orders() == []
+
+
+@pytest.mark.asyncio
+async def test_list_orders_explicit_overseas_symbol_propagates_denied(monkeypatch):
+    _patch_iter(
+        monkeypatch, ovrs_exc=PermissionDenied("not enrolled", broker="kis"),
+    )
+    client = orders_mod.KisOrdersClient(_broker())
+    with pytest.raises(PermissionDenied):
+        await client.list_orders(symbol="NASD:AAPL")
+
+
+@pytest.mark.asyncio
+async def test_list_orders_overseas_symbol_filters_client_side(monkeypatch):
+    _patch_iter(monkeypatch, ovrs_rows=[
+        _ovrs_ccnl_row(), _ovrs_ccnl_row(odno="OVRS2", pdno="TSLA"),
+    ])
+    client = orders_mod.KisOrdersClient(_broker())
+    orders = await client.list_orders(symbol="NASD:AAPL")
+    assert [o.order_id for o in orders] == ["OVRS1"]
+
+
+@pytest.mark.asyncio
+async def test_list_fills_includes_overseas(monkeypatch):
+    _patch_iter(monkeypatch, ovrs_rows=[_ovrs_ccnl_row()])
+    client = orders_mod.KisOrdersClient(_broker())
+    fills = await client.list_fills()
+    assert len(fills) == 1
+    assert fills[0].price.currency is Currency.USD
+
+
+@pytest.mark.asyncio
+async def test_get_finds_overseas_order(monkeypatch):
+    _patch_iter(monkeypatch, ovrs_rows=[_ovrs_ccnl_row()])
+    client = orders_mod.KisOrdersClient(_broker())
+    order = await client.get("OVRS1")
+    assert order.order_id == "OVRS1"
+
+
+@pytest.mark.asyncio
+async def test_iter_ovrs_ccnl_demo_sends_wildcards(monkeypatch):
+    captured = []
+
+    async def fake_call(broker, executor_cls, request, *, tr_id=None,
+                        extra_headers=None):
+        captured.append(request)
+        return SimpleNamespace(
+            output=[], headers=SimpleNamespace(tr_cont=""),
+            ctx_area_fk200="", ctx_area_nk200="",
+        )
+
+    monkeypatch.setattr(orders_mod, "call", fake_call)
+    client = orders_mod.KisOrdersClient(_broker(env="demo"))
+    await client._iter_ovrs_ccnl(
+        symbol=Symbol.parse("NASD:AAPL"), since=None, until=None,
+        status="open", only_filled=False,
+    )
+    (req,) = captured
+    assert req.PDNO == ""             # demo: server-side filters not allowed
+    assert req.OVRS_EXCG_CD == "%"
+    assert req.CCLD_NCCS_DVSN == "00"
+    assert req.SLL_BUY_DVSN == "00"
+
+
+@pytest.mark.asyncio
+async def test_iter_ovrs_ccnl_real_sends_filters(monkeypatch):
+    captured = []
+
+    async def fake_call(broker, executor_cls, request, *, tr_id=None,
+                        extra_headers=None):
+        captured.append(request)
+        return SimpleNamespace(
+            output=[], headers=SimpleNamespace(tr_cont=""),
+            ctx_area_fk200="", ctx_area_nk200="",
+        )
+
+    monkeypatch.setattr(orders_mod, "call", fake_call)
+    client = orders_mod.KisOrdersClient(_broker())
+    await client._iter_ovrs_ccnl(
+        symbol=Symbol.parse("NASD:AAPL"), since=None, until=None,
+        status="open", only_filled=False,
+    )
+    (req,) = captured
+    assert req.PDNO == "AAPL"
+    assert req.OVRS_EXCG_CD == "NASD"
+    assert req.CCLD_NCCS_DVSN == "02"  # open == 미체결
+    assert req.SORT_SQN == "DS"
+    assert req.ODNO == ""              # spec: must stay empty
