@@ -1381,3 +1381,77 @@ async def test_recap_budgets_overseas_buys_at_limit_price():
     assert req.price.amount == Decimal("101.00")
     assert req.qty == Decimal("9")
     assert req.qty * req.price.amount <= Decimal("1000")
+
+
+@pytest.mark.asyncio
+async def test_off_target_exit_respects_step_rate():
+    """Gradual mode must scale off-target liquidation too, not dump the whole
+    position in one run — otherwise step_rate is inconsistent across trades."""
+    import random
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, Position
+    from tooja.core.money import Money
+
+    target = Symbol(ticker="005930")
+    off = Symbol(ticker="035720")
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("0"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=off, qty=Decimal("10"),
+                avg_price=Money(amount=Decimal("50000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("50000"), currency=Currency.KRW),
+            ),
+        ],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=target, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+        step_rate=Decimal("0.5"),
+        rng=random.Random(0),
+    )
+    rb.broker.market._quotes[target] = type("_Q", (), {
+        "price": Money(amount=Decimal("70000"), currency=Currency.KRW),
+    })()
+    plan = await rb.compute_plan()
+    exits = [o for o in plan.trades if o.symbol == off and o.side is OrderSide.SELL]
+    assert len(exits) == 1
+    # 10 shares × step_rate 0.5 = 5 (deterministic; no fractional part).
+    assert exits[0].qty == Decimal("5")
+
+
+@pytest.mark.asyncio
+async def test_off_target_exit_full_when_step_rate_one():
+    """Full-rebalance mode (default step_rate=1.0) still exits the entire
+    off-target position, including fractional-share quantities exactly."""
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, Position
+    from tooja.core.money import Money
+
+    target = Symbol(ticker="005930")
+    off = Symbol(ticker="035720")
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("0"), currency=Currency.KRW)],
+        positions=[
+            Position(
+                symbol=off, qty=Decimal("10.5"),  # fractional must not be floored away
+                avg_price=Money(amount=Decimal("50000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("50000"), currency=Currency.KRW),
+            ),
+        ],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=target, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+    )
+    rb.broker.market._quotes[target] = type("_Q", (), {
+        "price": Money(amount=Decimal("70000"), currency=Currency.KRW),
+    })()
+    plan = await rb.compute_plan()
+    exits = [o for o in plan.trades if o.symbol == off and o.side is OrderSide.SELL]
+    assert len(exits) == 1
+    assert exits[0].qty == Decimal("10.5")
