@@ -70,8 +70,8 @@ async def test_step_rate_partial_close():
         step_rate=Decimal("0.5"),
     )
     plan = await rb.compute_plan()
-    assert len(plan.orders) == 1
-    assert plan.orders[0].qty == Decimal("10")
+    assert len(plan.trades) == 1
+    assert plan.trades[0].qty == Decimal("10")
 
 
 @pytest.mark.asyncio
@@ -100,7 +100,7 @@ async def test_drift_band_skips_small_drift():
         drift_band=Decimal("0.01"),
     )
     plan = await rb.compute_plan()
-    assert plan.orders == []
+    assert plan.trades == []
 
 
 @pytest.mark.asyncio
@@ -129,12 +129,12 @@ async def test_stochastic_rounding_is_seeded_and_unbiased():
     # 동일 seed → 결정적 재현
     p1 = await make_rb(42).compute_plan()
     p2 = await make_rb(42).compute_plan()
-    assert p1.orders[0].qty == p2.orders[0].qty
+    assert p1.trades[0].qty == p2.trades[0].qty
     # floor 7 또는 ceil 8 중 하나
-    assert p1.orders[0].qty in (Decimal("7"), Decimal("8"))
+    assert p1.trades[0].qty in (Decimal("7"), Decimal("8"))
 
     # 무편향: 다수 시도 평균이 7.14에 근접
-    qtys = [int((await make_rb(s).compute_plan()).orders[0].qty) for s in range(400)]
+    qtys = [int((await make_rb(s).compute_plan()).trades[0].qty) for s in range(400)]
     avg = sum(qtys) / len(qtys)
     assert 7.0 < avg < 7.3  # 기댓값 ≈ 7.142
 
@@ -168,7 +168,7 @@ async def test_direction_buy_only_skips_sells():
     )
     plan = await rb.compute_plan()
     # sym: SELL이 BUY_ONLY로 skip. sym2: 가격 미조회 → skip.
-    assert plan.orders == []
+    assert plan.trades == []
 
 
 @pytest.mark.asyncio
@@ -204,9 +204,9 @@ async def test_direction_buy_only_allows_buy_suppresses_sell():
     )
     plan = await rb.compute_plan()
     # over (SELL) suppressed; under (BUY) allowed. Don't assert qty (Task 9 may make it partial).
-    assert all(o.side is OrderSide.BUY for o in plan.orders)
-    assert any(o.symbol == under and o.side is OrderSide.BUY for o in plan.orders)
-    assert not any(o.symbol == over for o in plan.orders)
+    assert all(o.side is OrderSide.BUY for o in plan.trades)
+    assert any(o.symbol == under and o.side is OrderSide.BUY for o in plan.trades)
+    assert not any(o.symbol == over for o in plan.trades)
 
 
 @pytest.mark.asyncio
@@ -242,9 +242,9 @@ async def test_direction_sell_only_allows_sell_suppresses_buy():
     )
     plan = await rb.compute_plan()
     # over (SELL) allowed; under (BUY) suppressed.
-    assert all(o.side is OrderSide.SELL for o in plan.orders)
-    assert any(o.symbol == over and o.side is OrderSide.SELL for o in plan.orders)
-    assert not any(o.symbol == under for o in plan.orders)
+    assert all(o.side is OrderSide.SELL for o in plan.trades)
+    assert any(o.symbol == over and o.side is OrderSide.SELL for o in plan.trades)
+    assert not any(o.symbol == under for o in plan.trades)
 
 
 @pytest.mark.asyncio
@@ -273,10 +273,10 @@ async def test_cash_budget_prioritizes_larger_underweight():
     # investable 800,000: big target 560,000→5주(500,000), small 240,000→2주(200,000)
     # 합 700,000 ≤ 800,000 → 둘 다 가능
     plan = await rb.compute_plan()
-    bought = {o.symbol: o.qty for o in plan.orders}
+    bought = {o.symbol: o.qty for o in plan.trades}
     assert bought[big] == Decimal("5")
     assert bought[small] == Decimal("2")
-    total_buy = sum(o.qty * Decimal("100000") for o in plan.orders)
+    total_buy = sum(o.qty * Decimal("100000") for o in plan.trades)
     assert total_buy <= Decimal("800000")
 
 
@@ -302,7 +302,7 @@ async def test_cash_sink_respects_buffer():
         cash_sink=sink,
     )
     plan = await rb.compute_plan()
-    total_qty = sum(o.qty for o in plan.orders if o.symbol == sink)
+    total_qty = sum(o.qty for o in plan.trades if o.symbol == sink)
     assert total_qty == Decimal("98")
     assert plan.expected_cash.amount >= Decimal("20000")  # buffer 유지
 
@@ -340,7 +340,7 @@ async def test_cash_sink_invests_surplus_above_buffer():
         min_order_value=Decimal("1000000"),  # 일반 pass에서 모든 diff skip
     )
     plan = await rb.compute_plan()
-    sink_qty = sum(o.qty for o in plan.orders if o.symbol == sink)
+    sink_qty = sum(o.qty for o in plan.trades if o.symbol == sink)
     assert sink_qty == Decimal("48")  # 480,000 / 10,000 = 48
     assert plan.expected_cash.amount >= Decimal("20000")  # buffer 유지
 
@@ -379,7 +379,7 @@ async def test_cash_sink_step_rate_throttles_surplus():
         min_order_value=Decimal("1000000"),  # suppress the normal rebalance pass
     )
     plan = await rb.compute_plan()
-    sink_qty = sum(o.qty for o in plan.orders if o.symbol == sink)
+    sink_qty = sum(o.qty for o in plan.trades if o.symbol == sink)
     assert sink_qty == Decimal("24")  # 240,000 / 10,000, half of the 480,000 surplus
 
 
@@ -412,7 +412,7 @@ async def test_cash_sink_flips_off_target_sell_to_buy():
         cash_sink=sink,
     )
     plan = await rb.compute_plan()
-    sink_orders = [o for o in plan.orders if o.symbol == sink]
+    sink_orders = [o for o in plan.trades if o.symbol == sink]
     assert len(sink_orders) == 1
     assert sink_orders[0].side is OrderSide.BUY  # the off-target SELL was flipped to a BUY
     assert sink_orders[0].qty == Decimal("18")
@@ -478,9 +478,9 @@ async def test_stochastic_convergence_over_many_rounds():
         )
         plan = await rb.compute_plan()
         final_plan = plan
-        if not plan.orders:
+        if not plan.trades:
             break
-        for o in plan.orders:
+        for o in plan.trades:
             if o.symbol == sym:
                 if o.side is OrderSide.BUY:
                     qty += o.qty
@@ -493,7 +493,7 @@ async def test_stochastic_convergence_over_many_rounds():
     assert qty == Decimal("14"), f"Expected 14 shares, got {qty}"
     assert cash == Decimal("20000"), f"Expected 20000 residual cash, got {cash}"
     # Rebalancer stops issuing orders once convergence is reached.
-    assert final_plan is not None and final_plan.orders == []
+    assert final_plan is not None and final_plan.trades == []
 
 
 @pytest.mark.asyncio
@@ -540,7 +540,7 @@ async def test_stochastic_convergence_with_tiny_step_rate():
             rng=rng,
         )
         plan = await rb.compute_plan()
-        for o in plan.orders:
+        for o in plan.trades:
             if o.symbol == sym:
                 if o.side is OrderSide.BUY:
                     qty += o.qty
@@ -602,7 +602,7 @@ async def test_stochastic_convergence_with_extreme_tiny_step_rate():
             rng=rng,
         )
         plan = await rb.compute_plan()
-        for o in plan.orders:
+        for o in plan.trades:
             if o.symbol == sym:
                 if o.side is OrderSide.BUY:
                     qty += o.qty
@@ -650,9 +650,9 @@ async def test_cash_sink_does_not_stall_under_tiny_step_rate():
             cash_buffer_rate=Decimal("0.02"), cash_sink=sink,
             step_rate=Decimal("0.05"), rng=rng)
         plan = await rb.compute_plan()
-        if not plan.orders:
+        if not plan.trades:
             break
-        for o in plan.orders:
+        for o in plan.trades:
             if o.symbol == sink:
                 if o.side is OrderSide.BUY:
                     qty += o.qty; cash -= o.qty * price
@@ -719,9 +719,9 @@ async def test_cash_budget_partial_order_when_short_on_cash():
         cash_buffer_rate=Decimal("0"),
     )
     plan = await rb.compute_plan()
-    buys = {o.symbol: o.qty for o in plan.orders}
+    buys = {o.symbol: o.qty for o in plan.trades}
     assert buys.get(a) == Decimal("2")
-    total_buy = sum(o.qty * Decimal("100000") for o in plan.orders)
+    total_buy = sum(o.qty * Decimal("100000") for o in plan.trades)
     assert total_buy <= Decimal("300000")
 
 
@@ -778,7 +778,7 @@ async def test_no_trade_band_suppresses_subshare_churn():
     # Run 50 plans against the same (fixed) broker state; the band must keep all empty.
     for _ in range(50):
         plan = await rb.compute_plan()
-        assert plan.orders == [], f"no-trade band failed: {plan.orders}"
+        assert plan.trades == [], f"no-trade band failed: {plan.trades}"
 
 
 @pytest.mark.asyncio
@@ -802,7 +802,7 @@ async def test_lookup_price_handles_none_quote():
     )
     rb.broker.market = _NoneMarket()
     plan = await rb.compute_plan()   # must NOT raise
-    assert plan.orders == []          # price unknown -> target skipped
+    assert plan.trades == []          # price unknown -> target skipped
 
 
 @pytest.mark.asyncio
@@ -828,7 +828,7 @@ async def test_no_trade_band_allows_multishare_gap():
         cash_buffer_rate=Decimal("0"),
     )
     plan = await rb.compute_plan()
-    assert any(o.symbol == sym and o.qty > 0 for o in plan.orders)
+    assert any(o.symbol == sym and o.qty > 0 for o in plan.trades)
 
 
 def test_rebalancer_rejects_out_of_range_params():
@@ -891,7 +891,7 @@ async def test_unpriced_position_does_not_inflate_starting_cash():
         min_order_value=Decimal("1000000"),  # suppress normal pass
     )
     plan = await rb.compute_plan()
-    sink_qty = sum(o.qty for o in plan.orders if o.symbol == sink)
+    sink_qty = sum(o.qty for o in plan.trades if o.symbol == sink)
     # cash 200,000 - reserve 20,000 = 180,000 -> 18 shares.
     # Old (total - invested) would see 500,000 cash -> 48 shares.
     assert sink_qty == Decimal("18")
@@ -932,8 +932,8 @@ async def test_unpriced_short_cover_reserves_cash_via_avg_price():
     # cover BUY 10 @ avg 10,000 = 100,000 reserved -> 400,000 left -> long_t buys 40.
     # Without the avg_price fallback the cover costs 0 -> long_t would buy 50.
     assert any(o.symbol == short and o.side is OrderSide.BUY and o.qty == Decimal("10")
-               for o in plan.orders)
-    long_buy = sum(o.qty for o in plan.orders
+               for o in plan.trades)
+    long_buy = sum(o.qty for o in plan.trades
                    if o.symbol == long_t and o.side is OrderSide.BUY)
     assert long_buy == Decimal("40")
     # _summarize also charges the unpriced cover at avg_price: 500,000 - 100,000
@@ -975,7 +975,7 @@ async def test_cash_sink_reserves_for_unpriced_cover():
         min_order_value=Decimal("1000000"),  # suppress normal pass for held
     )
     plan = await rb.compute_plan()
-    sink_qty = sum(o.qty for o in plan.orders if o.symbol == sink)
+    sink_qty = sum(o.qty for o in plan.trades if o.symbol == sink)
     # projected_cash = 500,000 - 100,000 (unpriced cover @ avg) = 400,000;
     # surplus above reserve = 380,000 -> 38 shares.
     # Old (unpriced cover = 0) would leave 480,000 -> 48 shares.
@@ -1017,7 +1017,7 @@ async def test_cash_sink_suppressed_in_sell_only_mode():
     )
     plan = await rb.compute_plan()
     # The off-target SELL goes through; no BUY of any kind (sink included).
-    assert [(o.side, o.symbol) for o in plan.orders] == [(OrderSide.SELL, off)]
+    assert [(o.side, o.symbol) for o in plan.trades] == [(OrderSide.SELL, off)]
 
 
 @pytest.mark.asyncio
@@ -1045,5 +1045,5 @@ async def test_min_order_value_gates_full_gap_not_step_scaled_notional():
     )
     plan = await rb.compute_plan()
     # Gap (1,000,000) >= min -> trade allowed; step-scaled 5,000 -> 5 shares.
-    assert len(plan.orders) == 1
-    assert plan.orders[0].qty == Decimal("5")
+    assert len(plan.trades) == 1
+    assert plan.trades[0].qty == Decimal("5")

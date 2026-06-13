@@ -2,6 +2,7 @@
 
 from tooja.portfolio.rebalance import (
     ExpectedHolding,
+    PlannedTrade,
     Rebalancer,
     RebalancePlan,
     TargetWeight,
@@ -12,4 +13,5 @@ __all__ = [
     "RebalancePlan",
     "TargetWeight",
     "ExpectedHolding",
+    "PlannedTrade",
 ]
