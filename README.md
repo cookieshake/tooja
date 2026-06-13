@@ -238,12 +238,16 @@ rb = Rebalancer(
 )
 
 plan = await rb.compute_plan()   # dry run — inspect before trading
-await rb.execute(plan)           # place the planned orders
+await rb.execute(plan)           # convert trades to orders and place them
 ```
 
 `compute_plan()` returns a full `RebalancePlan` you can inspect first: the
-`orders` to place, plus the `expected_holdings`, `expected_cash`, and
-`expected_drift` they should produce once filled. The strategy knobs:
+broker-neutral `trades` (`PlannedTrade`: symbol, side, qty), plus the
+`expected_holdings`, `expected_cash`, and `expected_drift` they should produce
+once filled. The plan states *what* to trade; `execute()` decides *how* at
+submit time — domestic (KRX) trades become market orders, while overseas
+trades become marketable limit orders at the live quote ± `limit_offset`
+(KIS overseas regular-session trading is limit-only). The strategy knobs:
 
 - **`drift_band`** — no-trade band; leave a symbol untouched until it drifts past
   this fraction of its target value (cuts churn from tiny gaps).
@@ -254,6 +258,10 @@ await rb.execute(plan)           # place the planned orders
 - **`cash_sink`** — invest cash above the buffer into one symbol instead of
   leaving it idle. Suppressed when `direction=SELL_ONLY` (the sink only ever
   adds buy exposure).
+- **`limit_offset`** — aggressiveness of the marketable-limit price used for
+  overseas trades at execute time (default `0.01` = 1%): buys are priced at
+  quote × (1 + offset), sells at quote × (1 − offset). A trade whose quote
+  cannot be fetched is skipped for that run. Domestic trades are unaffected.
 
 `Rebalancer` depends only on the `Broker` ABC, so it works with any adapter.
 
