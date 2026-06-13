@@ -1,7 +1,11 @@
 """Target-weight rebalancer.
 
 Computes a diff between current portfolio and a target weight set, then
-generates MarketOrder requests to bring the portfolio closer to the targets.
+generates broker-neutral PlannedTrade intents to bring the portfolio closer
+to the targets. execute() converts each trade to a concrete order at submit
+time: domestic (KRX) trades become market orders; overseas trades become
+marketable limit orders at quote × (1 ± limit_offset), since KIS overseas
+regular-session trading is limit-only.
 
 Drift = sum of |actual_weight - target_weight| across symbols.
 
@@ -19,8 +23,8 @@ Constraints:
 - `cash_buffer_rate` of the sleeve total (cash + current position value in the
   sleeve currency) is held aside (not invested).
 - execute() is phased: SELLs are submitted and confirmed first, then real cash
-  is re-read from the broker and BUYs are re-sized against it (long-only,
-  market orders only). compute_plan() remains pure and uses estimated cash.
+  is re-read from the broker and BUYs are re-sized against it (long-only).
+  compute_plan() remains pure and uses estimated cash.
 """
 
 from __future__ import annotations
@@ -32,9 +36,10 @@ from decimal import Decimal
 from typing import Iterable
 
 from tooja.core.broker import Broker
-from tooja.core.enums import Currency, OrderSide, OrderStatus, RebalanceDirection
+from tooja.core.enums import Currency, Exchange, OrderSide, OrderStatus, RebalanceDirection
 from tooja.core.markets import currency_of
 from tooja.core.models import (
+    LimitOrder,
     MarketOrder,
     Order,
     OrderRequest,
@@ -42,7 +47,13 @@ from tooja.core.models import (
     Symbol,
 )
 from tooja.core.money import Money
-from tooja.portfolio.rebalance.models import ExpectedHolding, RebalancePlan, TargetWeight, _WEIGHT_TOLERANCE
+from tooja.portfolio.rebalance.models import (
+    ExpectedHolding,
+    PlannedTrade,
+    RebalancePlan,
+    TargetWeight,
+    _WEIGHT_TOLERANCE,
+)
 
 
 def _require_decimal(name: str, value: Decimal) -> Decimal:
@@ -86,6 +97,7 @@ class Rebalancer:
         cash_sink: Symbol | None = None,
         fill_poll_interval: float = 0.5,
         fill_timeout: float = 30.0,
+        limit_offset: Decimal = Decimal("0.01"),
     ):
         self.broker = broker
         self.targets = list(targets)
@@ -109,6 +121,9 @@ class Rebalancer:
             raise ValueError("fill_timeout must be positive")
         self.fill_poll_interval = fill_poll_interval
         self.fill_timeout = fill_timeout
+        self.limit_offset = _require_decimal("limit_offset", limit_offset)
+        if not (Decimal("0") <= self.limit_offset < Decimal("1.0")):
+            raise ValueError("limit_offset must be in [0, 1.0)")
         self._rng = rng if rng is not None else random.Random()
         self._validate_weights()
         self.currency = self._derive_currency()
@@ -144,7 +159,7 @@ class Rebalancer:
         return next(iter(currencies))
 
     async def compute_plan(self) -> RebalancePlan:
-        """Diff current vs target weights and produce the order list.
+        """Diff current vs target weights and produce the trade list.
 
         Held positions whose price cannot be resolved (broker omitted
         current_price and market.get_quote also fails) are flagged as
@@ -155,18 +170,18 @@ class Rebalancer:
         ctx = await self._load_account()
         await self._resolve_prices(ctx)
         self._compute_totals(ctx)
-        sell_orders, buy_candidates = await self._diff_targets(ctx)
+        sell_trades, buy_candidates = await self._diff_targets(ctx)
 
-        fixed_orders: list[OrderRequest] = list(sell_orders)
-        self._exit_off_targets(ctx, fixed_orders)  # off-target 청산을 예산 전에 합류
+        fixed_trades: list[PlannedTrade] = list(sell_trades)
+        self._exit_off_targets(ctx, fixed_trades)  # off-target 청산을 예산 전에 합류
 
-        orders = self._apply_cash_budget(ctx, fixed_orders, buy_candidates)
-        self._apply_cash_sink(ctx, orders)
-        orders.sort(key=lambda o: 0 if o.side is OrderSide.SELL else 1)
+        trades = self._apply_cash_budget(ctx, fixed_trades, buy_candidates)
+        self._apply_cash_sink(ctx, trades)
+        trades.sort(key=lambda t: 0 if t.side is OrderSide.SELL else 1)
 
-        holdings, cash, drift = self._summarize(ctx, orders)
+        holdings, cash, drift = self._summarize(ctx, trades)
         return RebalancePlan(
-            orders=orders,
+            trades=trades,
             expected_drift=drift,
             expected_holdings=holdings,
             expected_cash=cash,
@@ -263,9 +278,9 @@ class Rebalancer:
 
     async def _diff_targets(
         self, ctx: _PlanContext
-    ) -> tuple[list[OrderRequest], list[tuple[OrderRequest, Decimal]]]:
-        sell_orders: list[OrderRequest] = []
-        buy_candidates: list[tuple[OrderRequest, Decimal]] = []  # (order, |diff_value| 우선순위)
+    ) -> tuple[list[PlannedTrade], list[tuple[PlannedTrade, Decimal]]]:
+        sell_trades: list[PlannedTrade] = []
+        buy_candidates: list[tuple[PlannedTrade, Decimal]] = []  # (trade, |diff_value| 우선순위)
         held_qties = {p.symbol: p.qty for p in ctx.positions}
         for t in self.targets:
             if t.symbol in ctx.unpriced:
@@ -298,16 +313,16 @@ class Rebalancer:
 
             if adjusted_diff > 0:
                 buy_candidates.append(
-                    (MarketOrder(symbol=t.symbol, side=OrderSide.BUY, qty=qty), abs(diff_value))
+                    (PlannedTrade(symbol=t.symbol, side=OrderSide.BUY, qty=qty), abs(diff_value))
                 )
             else:
                 held_qty = held_qties.get(t.symbol, Decimal(0))
                 sell_qty = min(qty, held_qty)
                 if sell_qty > 0:
-                    sell_orders.append(
-                        MarketOrder(symbol=t.symbol, side=OrderSide.SELL, qty=sell_qty)
+                    sell_trades.append(
+                        PlannedTrade(symbol=t.symbol, side=OrderSide.SELL, qty=sell_qty)
                     )
-        return sell_orders, buy_candidates
+        return sell_trades, buy_candidates
 
     def _size(self, adjusted_diff: Decimal, price: Decimal) -> Decimal:
         """Compute integer share count from an already-scaled difference value.
@@ -330,7 +345,7 @@ class Rebalancer:
             return floor + Decimal("1")
         return floor
 
-    def _exit_off_targets(self, ctx: _PlanContext, orders: list[OrderRequest]) -> None:
+    def _exit_off_targets(self, ctx: _PlanContext, orders: list[PlannedTrade]) -> None:
         # Symbols currently held but not in targets -> fully exit. Long
         # positions SELL their qty; short positions BUY back abs(qty).
         target_syms = {t.symbol for t in self.targets}
@@ -342,7 +357,7 @@ class Rebalancer:
                 continue
             if side is OrderSide.BUY and self.direction is RebalanceDirection.SELL_ONLY:
                 continue
-            orders.append(MarketOrder(symbol=pos.symbol, side=side, qty=abs(pos.qty)))
+            orders.append(PlannedTrade(symbol=pos.symbol, side=side, qty=abs(pos.qty)))
 
     def _get_effective_price(self, symbol: Symbol, ctx: _PlanContext) -> Decimal:
         """Resolved market price, or the position's avg_price when unpriced.
@@ -359,10 +374,10 @@ class Rebalancer:
     def _apply_cash_budget(
         self,
         ctx: _PlanContext,
-        fixed_orders: list[OrderRequest],
-        buy_candidates: list[tuple[OrderRequest, Decimal]],
-    ) -> list[OrderRequest]:
-        orders: list[OrderRequest] = list(fixed_orders)
+        fixed_orders: list[PlannedTrade],
+        buy_candidates: list[tuple[PlannedTrade, Decimal]],
+    ) -> list[PlannedTrade]:
+        orders: list[PlannedTrade] = list(fixed_orders)
         available = ctx.starting_cash
         for o in fixed_orders:  # SELL은 현금↑, 숏청산 BUY는 현금↓
             px = self._get_effective_price(o.symbol, ctx)
@@ -380,11 +395,11 @@ class Rebalancer:
             elif available >= px:
                 affordable = (available / px).quantize(Decimal("1"), rounding="ROUND_DOWN")
                 if affordable > 0 and affordable * px >= self.min_order_value:
-                    orders.append(MarketOrder(symbol=order.symbol, side=OrderSide.BUY, qty=affordable))
+                    orders.append(PlannedTrade(symbol=order.symbol, side=OrderSide.BUY, qty=affordable))
                     available -= affordable * px
         return orders
 
-    def _apply_cash_sink(self, ctx: _PlanContext, orders: list[OrderRequest]) -> None:
+    def _apply_cash_sink(self, ctx: _PlanContext, orders: list[PlannedTrade]) -> None:
         """Invest surplus cash above buffer into the sink symbol."""
         if self.cash_sink is None:
             return
@@ -397,7 +412,7 @@ class Rebalancer:
 
         # 주문 반영 후 예상 현금
         projected_cash = ctx.starting_cash
-        sink_order: OrderRequest | None = None
+        sink_order: PlannedTrade | None = None
         for o in orders:
             px = self._get_effective_price(o.symbol, ctx)
             cost = o.qty * px
@@ -418,10 +433,10 @@ class Rebalancer:
             return
 
         if sink_order is None:
-            orders.append(MarketOrder(symbol=self.cash_sink, side=OrderSide.BUY, qty=add_qty))
+            orders.append(PlannedTrade(symbol=self.cash_sink, side=OrderSide.BUY, qty=add_qty))
         elif sink_order.side is OrderSide.BUY:
             idx = orders.index(sink_order)
-            orders[idx] = MarketOrder(symbol=self.cash_sink, side=OrderSide.BUY, qty=sink_order.qty + add_qty)
+            orders[idx] = PlannedTrade(symbol=self.cash_sink, side=OrderSide.BUY, qty=sink_order.qty + add_qty)
         else:  # 기존 SELL을 축소/플립
             # projected_cash already counted this SELL's proceeds, inflating add_qty by
             # sink_order.qty. The reduce step below absorbs exactly that amount, so the
@@ -430,15 +445,15 @@ class Rebalancer:
             remaining = sink_order.qty - offset_qty
             idx = orders.index(sink_order)
             if remaining > 0:
-                orders[idx] = MarketOrder(symbol=self.cash_sink, side=OrderSide.SELL, qty=remaining)
+                orders[idx] = PlannedTrade(symbol=self.cash_sink, side=OrderSide.SELL, qty=remaining)
             else:
                 orders.pop(idx)
                 flip = add_qty - offset_qty
                 if flip > 0:
-                    orders.append(MarketOrder(symbol=self.cash_sink, side=OrderSide.BUY, qty=flip))
+                    orders.append(PlannedTrade(symbol=self.cash_sink, side=OrderSide.BUY, qty=flip))
 
     def _summarize(
-        self, ctx: _PlanContext, orders: list[OrderRequest]
+        self, ctx: _PlanContext, orders: list[PlannedTrade]
     ) -> tuple[list[ExpectedHolding], Money, Decimal]:
         qty: dict[Symbol, Decimal] = {p.symbol: p.qty for p in ctx.positions}
         cash = ctx.starting_cash
@@ -473,11 +488,11 @@ class Rebalancer:
 
         Buy quantities in ``plan`` were sized against *estimated* cash. Prices
         move between planning and execution, so we re-derive the buy budget from
-        the broker's real reported cash after sells settle. Long-only, market
-        orders only (see the rebalance module docstring / design spec).
+        the broker's real reported cash after sells settle. Long-only (see the
+        rebalance module docstring / design spec).
         """
-        sells = [o for o in plan.orders if o.side is OrderSide.SELL]
-        buys = [o for o in plan.orders if o.side is OrderSide.BUY]
+        sells = [t for t in plan.trades if t.side is OrderSide.SELL]
+        buys = [t for t in plan.trades if t.side is OrderSide.BUY]
 
         out: list[Order] = []
         sell_orders = await self._submit_orders(sells, out)
@@ -486,19 +501,52 @@ class Rebalancer:
         await self._submit_orders(recapped, out)
         return out
 
-    async def _submit_orders(
-        self, reqs: list[OrderRequest], out: list[Order]
-    ) -> list[Order]:
-        """Submit each request; skip (don't abort) on individual failures.
+    async def _to_order_request(self, trade: PlannedTrade) -> OrderRequest | None:
+        """Choose the concrete order type for a trade at submit time.
 
-        A failed submit is dropped from the results — the subsequent cash
-        re-read reflects whatever actually executed, so the buy phase stays safe.
-        Appends to the shared cross-phase ``out`` list; returns only this
-        call's orders (used for fill-tracking).
+        KRX accepts market orders; every other venue we route through KIS is
+        limit-only in the regular session, so emit a marketable limit at
+        quote × (1 ± limit_offset) — Money quantizes it to the currency's
+        tick. Returns None when no usable quote exists; the caller skips the
+        trade, same as a failed submit.
+        """
+        if trade.symbol.exchange is Exchange.KRX:
+            return MarketOrder(symbol=trade.symbol, side=trade.side, qty=trade.qty)
+        px = await self._lookup_price(trade.symbol, self.currency)
+        if px is None or px <= 0:
+            return None
+        factor = (
+            Decimal(1) + self.limit_offset
+            if trade.side is OrderSide.BUY
+            else Decimal(1) - self.limit_offset
+        )
+        amount = px * factor
+        if amount <= 0:
+            return None
+        return LimitOrder(
+            symbol=trade.symbol,
+            side=trade.side,
+            qty=trade.qty,
+            price=Money(amount=amount, currency=self.currency),
+        )
+
+    async def _submit_orders(
+        self, trades: list[PlannedTrade], out: list[Order]
+    ) -> list[Order]:
+        """Convert and submit each trade; skip (don't abort) on individual failures.
+
+        A failed conversion (no usable quote) or submit is dropped from the
+        results — the subsequent cash re-read reflects whatever actually
+        executed, so the buy phase stays safe. Appends to the shared
+        cross-phase ``out`` list; returns only this call's orders (used for
+        fill-tracking).
         """
         submitted: list[Order] = []
-        for req in reqs:
+        for trade in trades:
             try:
+                req = await self._to_order_request(trade)
+                if req is None:
+                    continue
                 order = await self.broker.orders.create(req)
             except Exception:  # noqa: BLE001 — one bad order must not abort the rest
                 continue
@@ -534,8 +582,8 @@ class Rebalancer:
             await asyncio.sleep(self.fill_poll_interval)
 
     async def _recap_buys(
-        self, plan: RebalancePlan, buys: list[OrderRequest]
-    ) -> list[OrderRequest]:
+        self, plan: RebalancePlan, buys: list[PlannedTrade]
+    ) -> list[PlannedTrade]:
         """Re-size buys against the broker's real cash, largest-notional first."""
         if not buys:
             return []
@@ -563,7 +611,7 @@ class Rebalancer:
         quotes = await asyncio.gather(
             *(self._lookup_price(o.symbol, currency) for o in buys)
         )
-        priced: list[tuple[OrderRequest, Decimal]] = []
+        priced: list[tuple[PlannedTrade, Decimal]] = []
         for o, px in zip(buys, quotes):
             if px is None or px <= 0:
                 px = fallback.get(o.symbol, Decimal(0))
@@ -571,7 +619,7 @@ class Rebalancer:
                 priced.append((o, px))
         priced.sort(key=lambda x: x[0].qty * x[1], reverse=True)
 
-        out: list[OrderRequest] = []
+        out: list[PlannedTrade] = []
         for o, px in priced:
             cost = o.qty * px
             if cost <= available:
@@ -580,7 +628,7 @@ class Rebalancer:
             elif available >= px:
                 affordable = (available / px).quantize(Decimal("1"), rounding="ROUND_DOWN")
                 if affordable > 0 and affordable * px >= self.min_order_value:
-                    out.append(MarketOrder(symbol=o.symbol, side=OrderSide.BUY, qty=affordable))
+                    out.append(PlannedTrade(symbol=o.symbol, side=OrderSide.BUY, qty=affordable))
                     available -= affordable * px
         return out
 

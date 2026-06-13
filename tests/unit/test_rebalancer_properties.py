@@ -180,11 +180,11 @@ async def test_rebalance_is_idempotent_no_trade_region():
         )
 
     plan1 = await _make(balance).compute_plan()
-    assert plan1.orders, "first pass should trade"
+    assert plan1.trades, "first pass should trade"
 
     settled = _balance_from_plan(plan1)
     plan2 = await _make(settled).compute_plan()
-    assert plan2.orders == [], f"re-plan churned: {plan2.orders}"
+    assert plan2.trades == [], f"re-plan churned: {plan2.trades}"
 
 
 @pytest.mark.asyncio
@@ -218,11 +218,11 @@ async def test_overweight_target_is_sold_down_past_band():
         min_order_value=Decimal("0"),
     )
     plan = await rb.compute_plan()
-    a_sells = [o for o in plan.orders if o.symbol == _A and o.side is OrderSide.SELL]
+    a_sells = [o for o in plan.trades if o.symbol == _A and o.side is OrderSide.SELL]
     assert len(a_sells) == 1, "overweight target A must be sold"
     assert a_sells[0].qty == Decimal("45")
     # Proceeds rotate into underweight B.
-    assert any(o.symbol == _B and o.side is OrderSide.BUY for o in plan.orders)
+    assert any(o.symbol == _B and o.side is OrderSide.BUY for o in plan.trades)
 
 
 @pytest.mark.asyncio
@@ -260,7 +260,7 @@ async def test_overweight_target_within_band_is_left_alone():
         drift_band=Decimal("0.01"),
     )
     plan = await rb.compute_plan()
-    assert plan.orders == []
+    assert plan.trades == []
 
 
 @pytest.mark.asyncio
@@ -350,7 +350,7 @@ async def test_random_portfolios_satisfy_core_invariants():
 
         held = {p.symbol: p.qty for p in positions}
         sell_notional = buy_notional = Decimal(0)
-        for o in plan.orders:
+        for o in plan.trades:
             if o.side is OrderSide.SELL:
                 assert o.qty <= held.get(o.symbol, Decimal(0)), f"trial {trial}: oversell {o}"
                 sell_notional += o.qty * prices[o.symbol]
@@ -359,7 +359,7 @@ async def test_random_portfolios_satisfy_core_invariants():
         assert buy_notional <= cash + sell_notional, f"trial {trial}: overspend"
         assert plan.expected_cash.amount >= 0, f"trial {trial}: negative expected cash"
 
-        sides = [o.side for o in plan.orders]
+        sides = [o.side for o in plan.trades]
         first_buy = next((i for i, s in enumerate(sides) if s is OrderSide.BUY), len(sides))
         assert all(s is OrderSide.SELL for s in sides[:first_buy]), f"trial {trial}: buy before sell"
 
@@ -370,7 +370,7 @@ async def test_random_portfolios_satisfy_core_invariants():
         assert plan.expected_drift <= pre + Decimal("0.0001"), f"trial {trial}: drift increased"
 
         plan2 = await make(_balance_from_plan(plan)).compute_plan()
-        assert plan2.orders == [], f"trial {trial}: re-plan churned {plan2.orders}"
+        assert plan2.trades == [], f"trial {trial}: re-plan churned {plan2.trades}"
 
 
 class _SequencedAccount:
@@ -421,7 +421,7 @@ async def test_execute_rereads_balance_between_sell_and_buy_phases():
     rb.broker.orders = _FillTrackingOrders()
 
     plan = await rb.compute_plan()  # sized against estimated 1,000,000 proceeds
-    assert [(o.side, o.qty) for o in plan.orders] == [
+    assert [(o.side, o.qty) for o in plan.trades] == [
         (OrderSide.SELL, Decimal("20")), (OrderSide.BUY, Decimal("14")),
     ]
 
@@ -460,7 +460,7 @@ async def test_zero_weight_target_is_fully_exited():
         min_order_value=Decimal("10000"),
     )
     plan = await rb.compute_plan()
-    assert [(o.side, o.symbol, o.qty) for o in plan.orders] == [
+    assert [(o.side, o.symbol, o.qty) for o in plan.trades] == [
         (OrderSide.SELL, _A, Decimal("10")),
         (OrderSide.BUY, _B, Decimal("100")),  # (900,000 + 100,000) / 10,000
     ]
