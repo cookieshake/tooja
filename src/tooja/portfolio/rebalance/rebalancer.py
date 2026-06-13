@@ -370,7 +370,11 @@ class Rebalancer:
             if self.step_rate >= Decimal("1.0"):
                 qty = full
             else:
-                qty = self._size(full * self.step_rate, Decimal(1))
+                # Cap at the held qty: stochastic rounding can push a fractional
+                # position's scaled count above `full` (0.5 × 0.5 = 0.25 -> 1),
+                # which would oversell a long or flip a short to long. Mirrors
+                # _diff_targets' min(qty, held_qty) guard.
+                qty = min(self._size(full * self.step_rate, Decimal(1)), full)
             if qty <= 0:
                 continue
             orders.append(PlannedTrade(symbol=pos.symbol, side=side, qty=qty))

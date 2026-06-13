@@ -1455,3 +1455,47 @@ async def test_off_target_exit_full_when_step_rate_one():
     exits = [o for o in plan.trades if o.symbol == off and o.side is OrderSide.SELL]
     assert len(exits) == 1
     assert exits[0].qty == Decimal("10.5")
+
+
+@pytest.mark.asyncio
+async def test_off_target_exit_never_exceeds_position():
+    """Gradual exit must never size above the held quantity. Stochastic rounding
+    in _size can round a fractional position's scaled qty up past `full`
+    (0.5 × 0.5 = 0.25 -> 1), which would oversell / flip a short to long."""
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance, Position
+    from tooja.core.money import Money
+
+    class _AlwaysRoundUp:
+        """rng whose random() < frac always holds, forcing _size to round up."""
+        def random(self):
+            return 0.0
+
+    target = Symbol(ticker="005930")
+    off = Symbol(ticker="035720")
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000000"), currency=Currency.KRW),
+        cash=[Money(amount=Decimal("0"), currency=Currency.KRW)],  # no cash -> no target buy
+        positions=[
+            Position(
+                symbol=off, qty=Decimal("0.5"),  # fractional: scaled+rounded-up would exceed
+                avg_price=Money(amount=Decimal("50000"), currency=Currency.KRW),
+                current_price=Money(amount=Decimal("50000"), currency=Currency.KRW),
+            ),
+        ],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, {}),
+        targets=[TargetWeight(symbol=target, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+        step_rate=Decimal("0.5"),
+        rng=_AlwaysRoundUp(),
+    )
+    rb.broker.market._quotes[target] = type("_Q", (), {
+        "price": Money(amount=Decimal("70000"), currency=Currency.KRW),
+    })()
+    plan = await rb.compute_plan()
+    exits = [o for o in plan.trades if o.symbol == off and o.side is OrderSide.SELL]
+    assert len(exits) == 1
+    # Capped at the held 0.5 — never the rounded-up 1 that would oversell.
+    assert exits[0].qty == Decimal("0.5")
