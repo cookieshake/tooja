@@ -615,8 +615,15 @@ class Rebalancer:
         for o, px in zip(buys, quotes):
             if px is None or px <= 0:
                 px = fallback.get(o.symbol, Decimal(0))
-            if px > 0:
-                priced.append((o, px))
+            if px <= 0:
+                continue
+            # Budget at the price the broker will actually reserve: overseas
+            # buys are submitted as marketable limits at quote × (1 + offset),
+            # and brokers check buying power against the limit price — sizing
+            # at the raw quote would overshoot and get the order rejected.
+            if o.symbol.exchange is not Exchange.KRX:
+                px = px * (Decimal(1) + self.limit_offset)
+            priced.append((o, px))
         priced.sort(key=lambda x: x[0].qty * x[1], reverse=True)
 
         out: list[PlannedTrade] = []

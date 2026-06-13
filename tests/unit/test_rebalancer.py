@@ -976,7 +976,9 @@ async def test_recap_skips_buffer_when_expected_total_is_none():
     )
     balance = Balance(
         total_asset=Money(amount=Decimal("2600000"), currency=Currency.KRW),
-        cash=[Money(amount=Decimal("2000"), currency=Currency.USD)],
+        # Exact fit at the limit-price reserve (10 × 200 × 1.01 == 2020): any
+        # buffer subtraction would shrink the buy below 10 shares.
+        cash=[Money(amount=Decimal("2020"), currency=Currency.USD)],
     )
     rb = Rebalancer(
         broker=_ScriptedBroker(balance, _usd_quote_map(sym, "200")),
@@ -986,7 +988,7 @@ async def test_recap_skips_buffer_when_expected_total_is_none():
     )
     rb.broker.orders = _FillTrackingOrders()
     await rb.execute(plan)
-    # No expected_total -> no buffer -> full 10-share buy fits (10*200 == 2000).
+    # No expected_total -> no buffer -> full 10-share buy fits.
     assert len(rb.broker.orders.received) == 1
     assert rb.broker.orders.received[0].qty == Decimal("10")
 
@@ -1015,7 +1017,9 @@ async def test_recap_skips_buffer_when_expected_total_currency_differs():
     )
     balance = Balance(
         total_asset=Money(amount=Decimal("2600000"), currency=Currency.KRW),
-        cash=[Money(amount=Decimal("2000"), currency=Currency.USD)],
+        # Exact fit at the limit-price reserve (10 × 200 × 1.01 == 2020): any
+        # buffer subtraction would shrink the buy below 10 shares.
+        cash=[Money(amount=Decimal("2020"), currency=Currency.USD)],
     )
     rb = Rebalancer(
         broker=_ScriptedBroker(balance, _usd_quote_map(sym, "200")),
@@ -1026,7 +1030,7 @@ async def test_recap_skips_buffer_when_expected_total_currency_differs():
     rb.broker.orders = _FillTrackingOrders()
     await rb.execute(plan)
     # Buffer base currency (KRW) != sleeve currency (USD) -> buffer skipped ->
-    # full 10-share buy (subtracting 2,600,000*0.02 KRW from 2,000 USD is invalid).
+    # full 10-share buy (subtracting 2,600,000*0.02 KRW from USD cash is invalid).
     assert len(rb.broker.orders.received) == 1
     assert rb.broker.orders.received[0].qty == Decimal("10")
 
@@ -1344,3 +1348,36 @@ def test_rebalancer_rejects_bad_limit_offset():
         Rebalancer(broker=_StubBroker(), targets=targets, limit_offset=Decimal("-0.01"))
     with pytest.raises(TypeError, match="limit_offset"):
         Rebalancer(broker=_StubBroker(), targets=targets, limit_offset=0.01)
+
+
+@pytest.mark.asyncio
+async def test_recap_budgets_overseas_buys_at_limit_price():
+    """The submitted overseas order is a limit at quote × (1 + limit_offset);
+    budgeting recap buys at the raw quote would let the order's reserved
+    notional exceed real cash and get the whole order rejected by the broker."""
+    from tooja.core.enums import Currency, OrderSide
+    from tooja.core.models import Balance
+    from tooja.core.money import Money
+    from tooja.portfolio.rebalance.models import PlannedTrade
+
+    sym = Symbol.parse("NASD:AAPL")
+    balance = Balance(
+        total_asset=Money(amount=Decimal("1000"), currency=Currency.USD),
+        cash=[Money(amount=Decimal("1000"), currency=Currency.USD)],
+    )
+    rb = Rebalancer(
+        broker=_ScriptedBroker(balance, _usd_quote_map(sym, "100.00")),
+        targets=[TargetWeight(symbol=sym, weight=Decimal("1.0"))],
+        cash_buffer_rate=Decimal("0"),
+        min_order_value=Decimal("100"),
+    )
+    plan = RebalancePlan(
+        trades=[PlannedTrade(symbol=sym, side=OrderSide.BUY, qty=Decimal("20"))],
+        expected_drift=Decimal("0"),
+    )
+    await rb.execute(plan)
+    [req] = rb.broker.orders.received
+    # Limit price 101.00 -> floor(1000 / 101) = 9 shares, not floor(1000/100) = 10.
+    assert req.price.amount == Decimal("101.00")
+    assert req.qty == Decimal("9")
+    assert req.qty * req.price.amount <= Decimal("1000")
