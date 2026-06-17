@@ -253,7 +253,9 @@ trades become marketable limit orders at the live quote ± `limit_offset`
   this fraction of its target value (cuts churn from tiny gaps).
 - **`step_rate`** — fraction of each gap to close per run. `< 1.0` rebalances
   gradually, using unbiased stochastic rounding on fractional shares so it still
-  converges over many runs.
+  converges over many runs. Applies to off-target liquidations too: a dropped
+  symbol is wound down by the same fraction each run rather than dumped at once
+  (full mode, `1.0`, still exits it entirely in one go).
 - **`direction`** — restrict to buys only, sells only, or both.
 - **`cash_sink`** — invest cash above the buffer into one symbol instead of
   leaving it idle. Suppressed when `direction=SELL_ONLY` (the sink only ever

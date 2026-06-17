@@ -346,8 +346,13 @@ class Rebalancer:
         return floor
 
     def _exit_off_targets(self, ctx: _PlanContext, orders: list[PlannedTrade]) -> None:
-        # Symbols currently held but not in targets -> fully exit. Long
-        # positions SELL their qty; short positions BUY back abs(qty).
+        # Symbols currently held but not in targets -> exit toward zero. Long
+        # positions SELL their qty; short positions BUY back abs(qty). The exit
+        # honors step_rate like every other trade: full mode (>= 1.0) clears the
+        # whole position at once, gradual mode (< 1.0) liquidates a stochastic
+        # fraction each run so a single dropped symbol doesn't dump in one go.
+        # min_order_value / drift_band are intentionally not gated here — a
+        # zero-target symbol is always out of band and dust should still clear.
         target_syms = {t.symbol for t in self.targets}
         for pos in ctx.positions:
             if pos.symbol in target_syms or pos.qty == 0:
@@ -357,7 +362,22 @@ class Rebalancer:
                 continue
             if side is OrderSide.BUY and self.direction is RebalanceDirection.SELL_ONLY:
                 continue
-            orders.append(PlannedTrade(symbol=pos.symbol, side=side, qty=abs(pos.qty)))
+            full = abs(pos.qty)
+            # Scale in shares, not value/price: off-target positions may be
+            # unpriced, and full mode must preserve fractional qty exactly
+            # (price=1 turns _size's unit math into a pass-through of the share
+            # count, but only call it in gradual mode to avoid flooring full).
+            if self.step_rate >= Decimal("1.0"):
+                qty = full
+            else:
+                # Cap at the held qty: stochastic rounding can push a fractional
+                # position's scaled count above `full` (0.5 × 0.5 = 0.25 -> 1),
+                # which would oversell a long or flip a short to long. Mirrors
+                # _diff_targets' min(qty, held_qty) guard.
+                qty = min(self._size(full * self.step_rate, Decimal(1)), full)
+            if qty <= 0:
+                continue
+            orders.append(PlannedTrade(symbol=pos.symbol, side=side, qty=qty))
 
     def _get_effective_price(self, symbol: Symbol, ctx: _PlanContext) -> Decimal:
         """Resolved market price, or the position's avg_price when unpriced.
