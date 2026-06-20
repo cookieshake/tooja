@@ -38,7 +38,7 @@ class InquirePresentBalanceResponse_Output1Item(KisBaseModel):
     tr_mket_name: str | None = None  # 거래시장명 — 해당 종목의 거래시장명
     natn_kor_name: str | None = None  # 국가한글명 — 거래 국가명
     pchs_rmnd_wcrc_amt: str | None = None  # 매입잔액원화금액
-    thdt_buy_ccld_frcr_amt: dict | None = None  # 당일매수체결외화금액 — 당일 매수 외화금액 (Type: Object X String O)
+    thdt_buy_ccld_frcr_amt: str | None = None  # 당일매수체결외화금액 — 당일 매수 외화금액 (Type: Object X String O)
     thdt_sll_ccld_frcr_amt: str | None = None  # 당일매도체결외화금액 — 당일 매도 외화금액
     unit_amt: str | None = None  # 단위금액
     std_pdno: str | None = None  # 표준상품번호

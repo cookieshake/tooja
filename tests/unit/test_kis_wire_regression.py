@@ -253,3 +253,23 @@ def test_overseas_inquire_nccs_output_rows_are_typed():
         "output": [{"odno": "1", "pdno": "AAPL"}],
     })
     assert resp.output[0].pdno == "AAPL"
+
+
+def test_overseas_inquire_present_balance_frcr_amt_is_string():
+    """Regression: generator emitted `thdt_buy_ccld_frcr_amt: dict` from the
+    KIS spec's Object marking, but the real response returns a string like
+    '0.000000', so env="real" get_balance() raised 20 ValidationErrors."""
+    from tooja.brokers.kis.raw.overseas_stock_trading.inquire_present_balance import (
+        InquirePresentBalanceResponse,
+    )
+
+    resp = InquirePresentBalanceResponse.model_validate({
+        "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "ok",
+        "output1": [{
+            "pdno": "AAPL", "prdt_name": "APPLE INC",
+            "thdt_buy_ccld_frcr_amt": "0.000000",
+            "thdt_sll_ccld_frcr_amt": "0.000000",
+        }],
+        "output2": [],
+    })
+    assert resp.output1[0].thdt_buy_ccld_frcr_amt == "0.000000"
