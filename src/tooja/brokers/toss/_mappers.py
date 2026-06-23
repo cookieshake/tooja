@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from typing import Literal
 
 from tooja.core.enums import AssetClass, Currency, Exchange, OrderSide, OrderStatus
 from tooja.core.models import (
@@ -226,7 +227,7 @@ _ORDER_STATUS: dict[str, OrderStatus] = {
     "REPLACED": OrderStatus.OPEN,
 }
 
-_ORDER_TYPE: dict[str, str] = {
+_ORDER_TYPE: dict[str, Literal["market", "limit", "stop_limit"]] = {
     "LIMIT": "limit",
     "MARKET": "market",
 }

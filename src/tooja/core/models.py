@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Any, ClassVar, Literal, Self
@@ -40,6 +41,12 @@ class Symbol(BaseModel):
     def __str__(self) -> str:
         return f"{self.exchange.value}:{self.ticker}"
 
+    def __hash__(self) -> int:
+        # frozen=True already makes Symbol hashable at runtime; declaring it
+        # explicitly keeps it usable as a set/dict key under static type checkers
+        # (which don't model pydantic's generated __hash__).
+        return hash((self.ticker, self.exchange, self.asset))
+
     @classmethod
     def parse(cls, s: str) -> "Symbol":
         parts = [p.strip() for p in s.split(":")]
@@ -72,7 +79,7 @@ class Symbol(BaseModel):
             raise ValueError(f"unknown asset: {s!r}") from e
 
 
-def _require_single_currency(values: list[Money | None], context: str) -> None:
+def _require_single_currency(values: Sequence[Money | None], context: str) -> None:
     currencies = {m.currency for m in values if m is not None}
     if len(currencies) > 1:
         raise ValueError(f"{context} has inconsistent currencies: {currencies}")

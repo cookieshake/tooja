@@ -16,6 +16,7 @@ import logging
 from typing import TYPE_CHECKING, TypeVar
 
 import httpx
+from pydantic import BaseModel
 
 from tooja.brokers.kis.mapping import classify_kis_error
 from tooja.brokers.kis.raw.base import ApiExecutor, KisApiError, TokenExpiredError
@@ -26,17 +27,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-TResponse = TypeVar("TResponse")
+TReq = TypeVar("TReq", bound=BaseModel)
+TResp = TypeVar("TResp", bound=BaseModel)
 
 
 async def call(
     broker: "KisBroker",
-    executor_cls: type[ApiExecutor],
-    request,
+    executor_cls: type[ApiExecutor[TReq, TResp]],
+    request: TReq,
     *,
     tr_id: str | None = None,
     extra_headers: dict[str, str] | None = None,
-) -> object:
+) -> TResp:
     """Execute one KIS REST call with auth + error mapping + retries.
 
     `tr_id` defaults to executor's TR_ID (resolved for real/virtual env).
@@ -49,12 +51,12 @@ async def call(
 
 async def _call_with_retries(
     broker: "KisBroker",
-    executor_cls: type[ApiExecutor],
-    request,
+    executor_cls: type[ApiExecutor[TReq, TResp]],
+    request: TReq,
     *,
     tr_id: str | None,
     extra_headers: dict[str, str] | None,
-) -> object:
+) -> TResp:
     # Token-expiry retry is orthogonal to rate-limit retries: it doesn't
     # consume an `attempt`. Otherwise a token expiring on the very last attempt
     # would fall through to the unreachable branch instead of reissuing.
@@ -89,12 +91,12 @@ async def _call_with_retries(
 
 async def _call_once(
     broker: "KisBroker",
-    executor_cls: type[ApiExecutor],
-    request,
+    executor_cls: type[ApiExecutor[TReq, TResp]],
+    request: TReq,
     *,
     tr_id: str | None,
     extra_headers: dict[str, str] | None,
-):
+) -> TResp:
     async with broker._rate_limiter:  # noqa: SLF001 — peer module
         token = await broker.get_access_token()
         resolved_tr_id = tr_id or _resolve_tr_id(executor_cls, broker.is_virtual)

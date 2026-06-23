@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, AsyncIterator, Callable, Generic, TypeVar
 
 import websockets
+from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
 from tooja.brokers.kis.raw.ws_base import (
@@ -76,7 +77,7 @@ class KisWsStream(Generic[T]):
         self._auto_reconnect = auto_reconnect
         self._buffer_size = buffer_size
         self._symbols: set[Symbol] = {self._as_symbol(s) for s in symbols}
-        self._ws: websockets.WebSocketClientProtocol | None = None
+        self._ws: ClientConnection | None = None
         self._queue: asyncio.Queue[T] = asyncio.Queue(maxsize=buffer_size)
         self._reader_task: asyncio.Task | None = None
         self._url: str = VIRTUAL_WS_URL if broker.is_virtual else REAL_WS_URL
@@ -142,14 +143,15 @@ class KisWsStream(Generic[T]):
     async def _connect_and_subscribe(self) -> None:
         approval = await self._broker.get_approval_key()
         self._approval = approval
-        self._ws = await websockets.connect(self._url)
+        ws = await websockets.connect(self._url)
+        self._ws = ws
         try:
             for sym in list(self._symbols):
                 await self._send_subscribe(sym, TR_TYPE_SUBSCRIBE)
         except Exception:
             # Don't leak the freshly-opened socket if subscribe fails midway.
             try:
-                await self._ws.close()
+                await ws.close()
             finally:
                 self._ws = None
             raise
@@ -280,7 +282,7 @@ class KisOrderUpdateStream:
         self._include_control = include_control
         self._auto_reconnect = auto_reconnect
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=buffer_size)
-        self._ws: websockets.WebSocketClientProtocol | None = None
+        self._ws: ClientConnection | None = None
         self._reader_task: asyncio.Task | None = None
         self._url = VIRTUAL_WS_URL if broker.is_virtual else REAL_WS_URL
         self._closed = False
@@ -317,12 +319,13 @@ class KisOrderUpdateStream:
     async def _connect(self) -> None:
         approval = await self._broker.get_approval_key()
         self._approval = approval
-        self._ws = await websockets.connect(self._url)
+        ws = await websockets.connect(self._url)
+        self._ws = ws
         try:
             await self._send_subscribe(TR_TYPE_SUBSCRIBE)
         except Exception:
             try:
-                await self._ws.close()
+                await ws.close()
             finally:
                 self._ws = None
             raise
