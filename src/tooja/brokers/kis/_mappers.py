@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tooja.core.enums import Currency, Exchange, OrderSide, OrderStatus
 from tooja.core.models import (
@@ -23,6 +23,30 @@ from tooja.core.models import (
     Symbol,
 )
 from tooja.core.money import Money
+
+if TYPE_CHECKING:
+    # These are constructed via function-local imports at runtime (to keep this
+    # module's import graph light), but the return-type annotations below still
+    # need them resolvable at module scope for type checkers and IDEs.
+    from tooja.core.models import (
+        Dividend,
+        Fill,
+        FinancialPeriod,
+        FinancialSummary,
+        InvestorFlow,
+        MarginBalance,
+        Order,
+        OrderUpdate,
+        PriceLimit,
+        ProgramTrading,
+        RankingEntry,
+        SecuritiesLending,
+        ShortSellingDaily,
+        StockInfo,
+        StockWarnings,
+        Trade,
+        TradingHalt,
+    )
 
 KST_OFFSET_HOURS = 9
 
@@ -390,7 +414,6 @@ def kis_ord_dvsn(order_type: str) -> str:
 
 def order_from_daily_ccld_row(item: Any, raw_row: dict[str, Any]) -> "Order | None":
     """Convert inquire-daily-ccld row to Order."""
-    from datetime import time as _t
 
     from tooja.core.models import Order
 

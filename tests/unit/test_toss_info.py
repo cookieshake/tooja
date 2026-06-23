@@ -8,7 +8,6 @@ mirror the exact shapes that the raw layer produces at runtime.
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
 
 import pytest
 

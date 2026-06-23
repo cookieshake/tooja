@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from tooja.brokers.kis.raw.base import (
-    ApiExecutor, KisBaseModel, KisCommonResponse, SDecimal,
+    ApiExecutor, KisBaseModel, SDecimal,
 )
 
 

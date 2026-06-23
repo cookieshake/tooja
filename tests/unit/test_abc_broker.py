@@ -11,7 +11,6 @@ from tooja.core.clients import (
     RankingsClient,
     StreamClient,
 )
-from tooja.core.errors import UnsupportedOperation
 
 
 class _OpenCloseRecord:

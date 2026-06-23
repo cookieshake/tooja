@@ -342,7 +342,7 @@ async def test_expected_drift_is_post_rebalance_not_current():
     trades execute, not the current (pre-rebalance) drift."""
     from datetime import datetime, timezone
     from tooja.core.enums import Currency
-    from tooja.core.models import Balance, Position, Quote
+    from tooja.core.models import Balance, Quote
     from tooja.core.money import Money
 
     sym = Symbol(ticker="005930")

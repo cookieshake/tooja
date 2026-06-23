@@ -5,7 +5,6 @@ from __future__ import annotations
 from decimal import Decimal
 
 import httpx
-import pytest
 from pydantic import Field
 
 from tooja.brokers.toss.raw.base import (
@@ -114,7 +113,6 @@ def test_executor_post_json_body(monkeypatch):
 
 
 def test_no_blanket_camel_alias_for_snake_wire_keys():
-    from pydantic import Field
 
     class TokenReq(TossBaseModel):
         grant_type: str

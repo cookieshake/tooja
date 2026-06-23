@@ -593,7 +593,7 @@ class Rebalancer:
                 return_exceptions=True,
             )
             for oid, res in zip(oids, results):
-                if isinstance(res, Exception):
+                if isinstance(res, BaseException):
                     continue  # treat unknown as still pending
                 if res.status in terminal:
                     pending.discard(oid)
