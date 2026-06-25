@@ -78,3 +78,56 @@ def load_toml(path: str, environ: Mapping[str, str]) -> McpConfig:
         data = tomllib.load(f)
     data = _interpolate_tree(data, environ)
     return McpConfig.model_validate(data)
+
+
+_TRUE = {"1", "true", "yes", "on"}
+_BOOL_FIELDS = {"trading"}
+# fields that are not credential strings — parsed specially
+_KNOWN_FIELDS = {
+    "broker", "env", "app_key", "app_secret", "cano", "hts_id", "acnt_prdt_cd",
+    "client_id", "client_secret", "account_seq", "trading", "max_order_value",
+}
+
+
+def _account_from_flat(items: Mapping[str, str]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for field, raw in items.items():
+        if field not in _KNOWN_FIELDS:
+            continue
+        if field in _BOOL_FIELDS:
+            out[field] = raw.strip().lower() in _TRUE
+        else:
+            out[field] = raw
+    return out
+
+
+def load_from_env(environ: Mapping[str, str]) -> McpConfig:
+    names_raw = environ.get("TOOJA_MCP_ACCOUNTS")
+    accounts: dict[str, Any] = {}
+    if names_raw:
+        for name in (n.strip() for n in names_raw.split(",") if n.strip()):
+            prefix = f"TOOJA_MCP_{name.upper()}_"
+            items = {
+                k[len(prefix):].lower(): v
+                for k, v in environ.items()
+                if k.startswith(prefix)
+            }
+            accounts[name] = _account_from_flat(items)
+    else:
+        prefix = "TOOJA_MCP_"
+        skip = {"TOOJA_MCP_ACCOUNTS", "TOOJA_MCP_CONFIG"}
+        items = {
+            k[len(prefix):].lower(): v
+            for k, v in environ.items()
+            if k.startswith(prefix) and k not in skip
+        }
+        if items:
+            accounts["default"] = _account_from_flat(items)
+    return McpConfig.model_validate({"accounts": accounts})
+
+
+def load_config(environ: Mapping[str, str]) -> McpConfig:
+    path = environ.get("TOOJA_MCP_CONFIG")
+    if path:
+        return load_toml(path, environ)
+    return load_from_env(environ)
