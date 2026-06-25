@@ -10,8 +10,8 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from tooja.brokers.kis._mappers import kst_today, kst_today_yyyymmdd
-from tooja.brokers.kis.analytics import KisAnalyticsClient, _as_symbol as analytics_as_symbol
-from tooja.brokers.kis.info import KisInfoClient, _as_symbol as info_as_symbol
+from tooja.brokers.kis.analytics import _as_symbol as analytics_as_symbol
+from tooja.brokers.kis.info import _as_symbol as info_as_symbol
 from tooja.core.enums import Exchange
 from tooja.core.errors import UnsupportedOperation
 from tooja.core.models import Symbol

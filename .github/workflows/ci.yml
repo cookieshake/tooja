@@ -1,0 +1,49 @@
+name: ci
+
+# Lint, type-check, and test on every push to main and on pull requests.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0  # no floating v8 tag; pin the exact version
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Lint (ruff)
+        run: uv run ruff check src/ tests/
+
+      - name: Test + coverage gate
+        run: uv run pytest -q --cov --cov-fail-under=70
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      # Advisory for now: a residual set of type errors is being driven to zero.
+      # Kept non-blocking so it surfaces regressions without gating merges yet.
+      - name: Type check (pyright)
+        continue-on-error: true
+        run: uv run pyright src/

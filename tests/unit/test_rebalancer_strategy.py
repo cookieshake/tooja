@@ -8,7 +8,6 @@ from tooja.core.enums import Currency, RebalanceDirection
 from tooja.core.models import Balance, Position, Quote, Symbol
 from tooja.core.money import Money
 from tooja.portfolio import Rebalancer, TargetWeight
-from tooja.portfolio.rebalance import ExpectedHolding
 
 # reuse _ScriptedBroker from the integration-style test module
 from tests.unit.test_rebalancer import _ScriptedBroker

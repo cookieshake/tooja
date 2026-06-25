@@ -9,6 +9,12 @@ wheels/
 # MkDocs build output
 site/
 
+# Coverage artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
 # Virtual environments
 .venv
 .flox/

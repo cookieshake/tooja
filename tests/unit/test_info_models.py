@@ -1,8 +1,6 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-import pytest
-from pydantic import ValidationError
 
 from tooja.core.enums import Currency, FinancialPeriod
 from tooja.core.money import Money

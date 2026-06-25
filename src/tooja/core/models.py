@@ -10,7 +10,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from tooja.core.enums import (
     AssetClass,
-    Currency,
     Exchange,
     FinancialPeriod,
     OrderSide,

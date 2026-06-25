@@ -5,7 +5,6 @@ from __future__ import annotations
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 
 from tooja.brokers.kis._mappers import (
     _WS_ORDER_COLUMNS, _WS_QUOTE_COLUMNS,

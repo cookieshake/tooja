@@ -25,7 +25,7 @@ import httpx
 
 from tooja.brokers.toss.mapping import classify_toss_error
 from tooja.brokers.toss.raw.base import TossApiError, TossApiExecutor
-from tooja.core.errors import BrokerAPIError, BrokerError, NetworkError
+from tooja.core.errors import BrokerError, NetworkError
 
 if TYPE_CHECKING:
     from tooja.brokers.toss.broker import TossBroker
