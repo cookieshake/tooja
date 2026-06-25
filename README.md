@@ -146,7 +146,7 @@ await broker.market.get_ohlcv("005930", interval="1d", limit=30) # -> list[OHLCV
 ### Account
 
 ```python
-balance = await broker.account.get_balance()      # -> Balance (total_asset, cash, positions)
+balance = await broker.account.get_balance()      # -> Balance (total_asset, cash, orderable_cash, positions)
 positions = await broker.account.get_positions()  # -> list[Position]
 pos = await broker.account.get_position("005930") # -> Position | None
 ```

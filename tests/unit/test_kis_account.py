@@ -146,6 +146,46 @@ async def test_get_sellable_quantity_overseas_propagates_permission_denied(monke
         await broker.close()
 
 
+@pytest.mark.asyncio
+async def test_domestic_balance_attaches_orderable_cash(monkeypatch):
+    client = KisAccountClient.__new__(KisAccountClient)
+    client._broker = object()
+
+    class _Out2:
+        dnca_tot_amt = "500000"  # gross deposit
+        tot_evlu_amt = "900000"
+
+    async def fake_iterate(self):
+        return ([], [_Out2()])
+
+    async def fake_orderable(self):
+        return Money(amount=Decimal("420000"), currency=Currency.KRW)  # order-adjusted
+
+    monkeypatch.setattr(KisAccountClient, "_iterate_balance", fake_iterate)
+    monkeypatch.setattr(KisAccountClient, "_domestic_orderable_cash", fake_orderable)
+
+    bal = await client._domestic_balance()
+    assert {m.currency: m.amount for m in bal.cash}[Currency.KRW] == Decimal("500000")
+    assert {m.currency: m.amount for m in bal.orderable_cash}[Currency.KRW] == Decimal("420000")
+
+
+@pytest.mark.asyncio
+async def test_domestic_orderable_cash_degrades_on_broker_error(monkeypatch):
+    from tooja.core.errors import BrokerAPIError
+
+    async def boom(broker, executor_cls, request, *, tr_id=None, extra_headers=None):
+        raise BrokerAPIError("inquire-psbl-order unavailable (demo)", broker="kis")
+
+    monkeypatch.setattr(account_mod, "call", boom)
+    broker = _broker()
+    await broker.open()
+    try:
+        result = await KisAccountClient(broker)._domestic_orderable_cash()
+    finally:
+        await broker.close()
+    assert result is None
+
+
 def _make_kis_account(monkeypatch, domestic, overseas):
     client = KisAccountClient.__new__(KisAccountClient)
     client._broker = object()
@@ -156,8 +196,12 @@ def _make_kis_account(monkeypatch, domestic, overseas):
     async def fake_overseas(self):
         return overseas  # a Balance
 
+    async def fake_orderable(self):
+        return None  # default: degrade to gross cash
+
     monkeypatch.setattr(KisAccountClient, "_iterate_balance", fake_iterate)
     monkeypatch.setattr(KisAccountClient, "_overseas_balance", fake_overseas)
+    monkeypatch.setattr(KisAccountClient, "_domestic_orderable_cash", fake_orderable)
     return client
 
 
