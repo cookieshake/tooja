@@ -25,7 +25,7 @@ import httpx
 
 from tooja.brokers.toss.mapping import classify_toss_error
 from tooja.brokers.toss.raw.base import TossApiError, TossApiExecutor
-from tooja.core.errors import BrokerError, NetworkError
+from tooja.core.errors import BrokerAPIError, BrokerError, NetworkError
 
 if TYPE_CHECKING:
     from tooja.brokers.toss.broker import TossBroker
@@ -133,6 +133,12 @@ async def _call_once(
 
 def _translate(err: TossApiError, endpoint: str) -> BrokerError:
     cls = classify_toss_error(err.code, err.http_status)
+    if cls is BrokerAPIError:
+        logger.warning(
+            "Toss unmapped error code %s (HTTP %s) on %s: %s — falling back to "
+            "BrokerAPIError (consider adding it to classify_toss_error)",
+            err.code, err.http_status, endpoint, err.message,
+        )
     return cls(
         err.message or err.code,
         broker="toss",

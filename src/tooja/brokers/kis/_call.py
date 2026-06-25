@@ -136,6 +136,12 @@ def _resolve_tr_id(executor_cls: type[ApiExecutor], is_virtual: bool) -> str | N
 
 def _translate(err: KisApiError, endpoint: str) -> BrokerError:
     cls = classify_kis_error(err.rt_cd, err.code, err.message) or BrokerAPIError
+    if cls is BrokerAPIError:
+        logger.warning(
+            "KIS unmapped error code %s on %s: %s — falling back to BrokerAPIError "
+            "(consider adding it to classify_kis_error)",
+            err.code, endpoint, err.message,
+        )
     return cls(
         err.message,
         broker="kis",
