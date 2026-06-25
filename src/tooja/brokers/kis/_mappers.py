@@ -1186,7 +1186,13 @@ def balance_from_present_balance(resp: Any) -> Balance:
         total = _money_krw(getattr(out3, "tot_asst_amt", None))
     raw = resp.model_dump(by_alias=True) if hasattr(resp, "model_dump") else {}
     return Balance(
-        total_asset=total, cash=cash, positions=positions, raw=raw,
+        total_asset=total,
+        cash=cash,
+        # Overseas cash already comes from frcr_dncl_amt_2 (외화사용가능금액), i.e.
+        # the spendable foreign amount, so it doubles as orderable cash.
+        orderable_cash=list(cash),
+        positions=positions,
+        raw=raw,
     )
 
 
@@ -1196,10 +1202,15 @@ def merge_balances(domestic: Balance, overseas: Balance) -> Balance:
     Cash is summed per currency, positions are concatenated, and total_asset
     is summed (both are expected to be KRW-base).
     """
-    by_ccy: dict = {}
-    for m in list(domestic.cash) + list(overseas.cash):
-        by_ccy[m.currency] = by_ccy.get(m.currency, Decimal(0)) + m.amount
-    cash = [Money(amount=a, currency=c) for c, a in by_ccy.items()]
+    def _sum_per_currency(*lists: list[Money]) -> list[Money]:
+        by_ccy: dict = {}
+        for lst in lists:
+            for m in lst:
+                by_ccy[m.currency] = by_ccy.get(m.currency, Decimal(0)) + m.amount
+        return [Money(amount=a, currency=c) for c, a in by_ccy.items()]
+
+    cash = _sum_per_currency(domestic.cash, overseas.cash)
+    orderable_cash = _sum_per_currency(domestic.orderable_cash, overseas.orderable_cash)
     totals = [b.total_asset for b in (domestic, overseas) if b.total_asset is not None]
     total: Money | None = None
     if totals:
@@ -1220,6 +1231,7 @@ def merge_balances(domestic: Balance, overseas: Balance) -> Balance:
     return Balance(
         total_asset=total,
         cash=cash,
+        orderable_cash=orderable_cash,
         positions=list(domestic.positions) + list(overseas.positions),
         raw={"domestic": domestic.raw, "overseas": overseas.raw},
     )

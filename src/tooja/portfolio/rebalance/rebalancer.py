@@ -39,6 +39,7 @@ from tooja.core.broker import Broker
 from tooja.core.enums import Currency, Exchange, OrderSide, OrderStatus, RebalanceDirection
 from tooja.core.markets import currency_of
 from tooja.core.models import (
+    Balance,
     LimitOrder,
     MarketOrder,
     Order,
@@ -62,6 +63,19 @@ def _require_decimal(name: str, value: Decimal) -> Decimal:
             f"{name} must be Decimal (got {type(value).__name__}); use Decimal('...') explicitly"
         )
     return value
+
+
+def _sleeve_cash(balance: Balance, currency: Currency) -> Decimal:
+    """Cash available to buy in `currency`, preferring the broker's order-adjusted
+    figure (`orderable_cash`) and falling back to gross `cash` when an adapter
+    doesn't supply it. Keeps the rebalancer broker-neutral — it never reaches for
+    a broker-specific buying-power call, it just uses the better number when the
+    Balance carries it."""
+    for source in (balance.orderable_cash, balance.cash):
+        amount = next((m.amount for m in source if m.currency == currency), None)
+        if amount is not None:
+            return amount
+    return Decimal(0)
 
 
 @dataclass
@@ -197,9 +211,7 @@ class Rebalancer:
         """
         balance = await self.broker.account.get_balance()
         currency = self.currency
-        starting_cash = next(
-            (m.amount for m in balance.cash if m.currency == currency), Decimal(0)
-        )
+        starting_cash = _sleeve_cash(balance, currency)
         positions = []
         for p in balance.positions:
             try:
@@ -613,9 +625,7 @@ class Rebalancer:
         # taking the budget currency from it would spend e.g. a KRW cash figure
         # against USD-priced buys on a multi-currency account.
         currency = self.currency
-        available = next(
-            (m.amount for m in balance.cash if m.currency == currency), Decimal(0)
-        )
+        available = _sleeve_cash(balance, currency)
         # Buffer is denominated in the sleeve currency; expected_total is the
         # sleeve total computed at plan time (cash + positions in this currency).
         # Note: recap deliberately reserves the buffer against the real post-sell

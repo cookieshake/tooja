@@ -236,6 +236,9 @@ def test_balance_from_present_balance_maps_cash_positions_total():
     by_ccy = {m.currency: m.amount for m in bal.cash}
     assert by_ccy[Currency.USD] == Decimal("2000")
     assert by_ccy[Currency.HKD] == Decimal("0")
+    # Overseas cash is frcr_dncl_amt_2 (usable foreign amount), so it doubles as
+    # orderable cash.
+    assert {m.currency: m.amount for m in bal.orderable_cash} == by_ccy
     assert len(bal.positions) == 1
     pos = bal.positions[0]
     assert pos.symbol.ticker == "AAPL"
@@ -245,6 +248,27 @@ def test_balance_from_present_balance_maps_cash_positions_total():
     assert pos.qty == Decimal("12")
     assert bal.total_asset.amount == Decimal("5000000")
     assert bal.total_asset.currency == Currency.KRW
+
+
+def test_merge_balances_merges_orderable_cash_per_currency():
+    from decimal import Decimal
+    from tooja.brokers.kis._mappers import merge_balances
+    from tooja.core.enums import Currency
+    from tooja.core.models import Balance
+    from tooja.core.money import Money
+
+    domestic = Balance(
+        cash=[Money(amount=Decimal("500000"), currency=Currency.KRW)],
+        orderable_cash=[Money(amount=Decimal("420000"), currency=Currency.KRW)],
+    )
+    overseas = Balance(
+        cash=[Money(amount=Decimal("2000"), currency=Currency.USD)],
+        orderable_cash=[Money(amount=Decimal("2000"), currency=Currency.USD)],
+    )
+    merged = merge_balances(domestic, overseas)
+    by_ccy = {m.currency: m.amount for m in merged.orderable_cash}
+    assert by_ccy[Currency.KRW] == Decimal("420000")
+    assert by_ccy[Currency.USD] == Decimal("2000")
 
 
 def test_present_balance_qty_falls_back_to_cblc_when_ccld_absent():

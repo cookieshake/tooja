@@ -36,7 +36,7 @@ from tooja.brokers.kis.raw.domestic_stock_trading.inquire_psbl_sell import (
 )
 from tooja.core.clients import AccountClient
 from tooja.core.enums import Currency
-from tooja.core.errors import PermissionDenied, UnsupportedOperation
+from tooja.core.errors import BrokerError, PermissionDenied, UnsupportedOperation
 from tooja.core.markets import currency_of
 from tooja.core.models import Balance, Position, Symbol
 from tooja.core.money import Money
@@ -66,8 +66,24 @@ class KisAccountClient(AccountClient):
         return merge_balances(domestic, overseas)
 
     async def _domestic_balance(self) -> Balance:
-        rows, summaries = await self._iterate_balance()
-        return balance_from_inquire(rows, summaries, raw={"page_count": len(rows)})
+        (rows, summaries), orderable = await asyncio.gather(
+            self._iterate_balance(),
+            self._domestic_orderable_cash(),
+        )
+        balance = balance_from_inquire(rows, summaries, raw={"page_count": len(rows)})
+        if orderable is not None:
+            balance = balance.model_copy(update={"orderable_cash": [orderable]})
+        return balance
+
+    async def _domestic_orderable_cash(self) -> Money | None:
+        """Best-effort KRW order-adjusted cash (inquire-psbl-order nrcvb_buy_amt) —
+        the figure that already nets out cash locked by open orders, unlike the
+        gross dnca_tot_amt deposit. Returns None when the TR is unavailable (e.g.
+        KIS demo) so get_balance degrades to gross cash rather than failing."""
+        try:
+            return await self.get_buying_power()
+        except BrokerError:
+            return None
 
     async def _overseas_balance(self) -> Balance:
         """Single-call overseas snapshot (no pagination; NATN_CD=000 = all)."""

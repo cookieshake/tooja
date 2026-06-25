@@ -169,14 +169,22 @@ class Position(_MoneyConsistent):
 class Balance(BaseModel):
     total_asset: Money | None = None
     cash: list[Money] = Field(default_factory=list)
+    # Cash actually available to place new buy orders, per currency: the broker's
+    # order-adjusted figure (settled / not locked by open orders), as opposed to
+    # `cash` which is the gross deposit. Empty when the adapter can't supply it;
+    # consumers should then fall back to `cash`.
+    orderable_cash: list[Money] = Field(default_factory=list)
     positions: list[Position] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_cash_unique_currencies(self) -> "Balance":
-        currencies = [m.currency for m in self.cash]
-        if len(currencies) != len(set(currencies)):
-            raise ValueError(f"Balance.cash has duplicate currencies: {currencies}")
+        for field in ("cash", "orderable_cash"):
+            currencies = [m.currency for m in getattr(self, field)]
+            if len(currencies) != len(set(currencies)):
+                raise ValueError(
+                    f"Balance.{field} has duplicate currencies: {currencies}"
+                )
         return self
 
 

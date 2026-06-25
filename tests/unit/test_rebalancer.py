@@ -1499,3 +1499,31 @@ async def test_off_target_exit_never_exceeds_position():
     assert len(exits) == 1
     # Capped at the held 0.5 — never the rounded-up 1 that would oversell.
     assert exits[0].qty == Decimal("0.5")
+
+
+def test_sleeve_cash_prefers_orderable_then_falls_back():
+    from tooja.portfolio.rebalance.rebalancer import _sleeve_cash
+    from tooja.core.enums import Currency
+    from tooja.core.models import Balance
+    from tooja.core.money import Money
+
+    # orderable present for the sleeve currency -> use the order-adjusted figure
+    b = Balance(
+        cash=[Money(amount=Decimal("500000"), currency=Currency.KRW)],
+        orderable_cash=[Money(amount=Decimal("420000"), currency=Currency.KRW)],
+    )
+    assert _sleeve_cash(b, Currency.KRW) == Decimal("420000")
+
+    # no orderable -> fall back to gross cash (broker that doesn't supply it)
+    b2 = Balance(cash=[Money(amount=Decimal("500000"), currency=Currency.KRW)])
+    assert _sleeve_cash(b2, Currency.KRW) == Decimal("500000")
+
+    # currency absent everywhere -> 0
+    assert _sleeve_cash(b2, Currency.USD) == Decimal("0")
+
+    # per-currency fallback: orderable has KRW only, USD lives only in cash
+    b3 = Balance(
+        cash=[Money(amount=Decimal("2000"), currency=Currency.USD)],
+        orderable_cash=[Money(amount=Decimal("420000"), currency=Currency.KRW)],
+    )
+    assert _sleeve_cash(b3, Currency.USD) == Decimal("2000")

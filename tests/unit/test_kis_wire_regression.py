@@ -184,7 +184,7 @@ async def test_inquire_balance_request_includes_ofl_yn():
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if "domestic-stock" in request.url.path:
+        if "inquire-balance" in request.url.path:
             # Domestic inquire-balance — capture query params for assertion.
             captured["query"] = dict(request.url.params)
             return httpx.Response(200, json={
@@ -198,6 +198,15 @@ async def test_inquire_balance_request_includes_ofl_yn():
                     "dnca_tot_amt": "100000000",
                     "tot_evlu_amt": "100000000",
                 }],
+            })
+        if "inquire-psbl-order" in request.url.path:
+            # Domestic orderable-cash enrichment — valid response so get_balance
+            # doesn't degrade; not the subject of this regression.
+            return httpx.Response(200, json={
+                "rt_cd": "0",
+                "msg_cd": "MCA00000",
+                "msg1": "OK",
+                "output": {"nrcvb_buy_amt": "100000000"},
             })
         # Overseas inquire-present-balance — return empty valid response.
         return httpx.Response(200, json={
