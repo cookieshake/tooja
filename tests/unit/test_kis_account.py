@@ -83,6 +83,69 @@ async def test_get_sellable_quantity_list_output1(monkeypatch):
     assert qty == Decimal("7")
 
 
+@pytest.mark.asyncio
+async def test_get_sellable_quantity_overseas_routes_and_matches(monkeypatch):
+    from tooja.brokers.kis.raw.overseas_stock_trading.inquire_balance import (
+        InquireBalanceExecutor as OverseasInquireBalanceExecutor,
+    )
+
+    captured = {}
+
+    async def fake_call(broker, executor_cls, request, *, tr_id=None, extra_headers=None):
+        captured["cls"] = executor_cls
+        captured["req"] = request
+        # ord_psbl_qty (sellable) can be below the held qty when some is locked.
+        return SimpleNamespace(output1=[
+            SimpleNamespace(ovrs_pdno="MSFT", ord_psbl_qty="3"),
+            SimpleNamespace(ovrs_pdno="AAPL", ord_psbl_qty="11"),
+        ])
+
+    monkeypatch.setattr(account_mod, "call", fake_call)
+    broker = _broker()
+    await broker.open()
+    try:
+        qty = await KisAccountClient(broker).get_sellable_quantity("NASD:AAPL")
+    finally:
+        await broker.close()
+
+    assert qty == Decimal("11")
+    assert captured["cls"] is OverseasInquireBalanceExecutor
+    assert captured["req"].OVRS_EXCG_CD == "NASD"
+    assert captured["req"].TR_CRCY_CD == "USD"
+
+
+@pytest.mark.asyncio
+async def test_get_sellable_quantity_overseas_absent_returns_zero(monkeypatch):
+    async def fake_call(broker, executor_cls, request, *, tr_id=None, extra_headers=None):
+        return SimpleNamespace(output1=[SimpleNamespace(ovrs_pdno="TSLA", ord_psbl_qty="5")])
+
+    monkeypatch.setattr(account_mod, "call", fake_call)
+    broker = _broker()
+    await broker.open()
+    try:
+        qty = await KisAccountClient(broker).get_sellable_quantity("NASD:AAPL")
+    finally:
+        await broker.close()
+    assert qty == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_get_sellable_quantity_overseas_propagates_permission_denied(monkeypatch):
+    from tooja.core.errors import PermissionDenied
+
+    async def denied(broker, executor_cls, request, *, tr_id=None, extra_headers=None):
+        raise PermissionDenied("overseas-stock not enrolled", broker="kis")
+
+    monkeypatch.setattr(account_mod, "call", denied)
+    broker = _broker()
+    await broker.open()
+    try:
+        with pytest.raises(PermissionDenied):
+            await KisAccountClient(broker).get_sellable_quantity("NASD:AAPL")
+    finally:
+        await broker.close()
+
+
 def _make_kis_account(monkeypatch, domestic, overseas):
     client = KisAccountClient.__new__(KisAccountClient)
     client._broker = object()

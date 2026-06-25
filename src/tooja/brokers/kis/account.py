@@ -11,11 +11,16 @@ from tooja.brokers.kis._mappers import (
     _dec,
     balance_from_inquire,
     balance_from_present_balance,
+    excd_for,
     merge_balances,
 )
 from tooja.brokers.kis.raw.domestic_stock_trading.inquire_balance import (
     InquireBalanceExecutor,
     InquireBalanceRequest,
+)
+from tooja.brokers.kis.raw.overseas_stock_trading.inquire_balance import (
+    InquireBalanceExecutor as OverseasInquireBalanceExecutor,
+    InquireBalanceRequest as OverseasInquireBalanceRequest,
 )
 from tooja.brokers.kis.raw.overseas_stock_trading.inquire_present_balance import (
     InquirePresentBalanceExecutor,
@@ -32,6 +37,7 @@ from tooja.brokers.kis.raw.domestic_stock_trading.inquire_psbl_sell import (
 from tooja.core.clients import AccountClient
 from tooja.core.enums import Currency
 from tooja.core.errors import PermissionDenied, UnsupportedOperation
+from tooja.core.markets import currency_of
 from tooja.core.models import Balance, Position, Symbol
 from tooja.core.money import Money
 
@@ -125,6 +131,8 @@ class KisAccountClient(AccountClient):
 
     async def get_sellable_quantity(self, symbol: Symbol | str) -> Decimal:
         sym = _as_symbol(symbol)
+        if excd_for(sym.exchange) is not None:
+            return await self._overseas_sellable_quantity(sym)
         creds = self._broker.credentials
         req = InquirePsblSellRequest(
             CANO=creds.cano, ACNT_PRDT_CD=creds.acnt_prdt_cd, PDNO=sym.ticker,
@@ -138,6 +146,25 @@ class KisAccountClient(AccountClient):
             return Decimal(0)
         qty = _dec(getattr(item, "ord_psbl_qty", None))
         return qty if qty is not None else Decimal(0)
+
+    async def _overseas_sellable_quantity(self, sym: Symbol) -> Decimal:
+        """Overseas has no per-symbol sellable endpoint, so read the holdings for
+        the symbol's exchange/currency and pick out its orderable (ord_psbl_qty)
+        amount. PermissionDenied is *not* swallowed here: an explicit overseas
+        query should surface a not-enrolled account rather than read as zero."""
+        creds = self._broker.credentials
+        req = OverseasInquireBalanceRequest(
+            CANO=creds.cano,
+            ACNT_PRDT_CD=creds.acnt_prdt_cd,
+            OVRS_EXCG_CD=sym.exchange.value,
+            TR_CRCY_CD=currency_of(sym.exchange).value,
+        )
+        resp = await call(self._broker, OverseasInquireBalanceExecutor, req)
+        for item in getattr(resp, "output1", None) or []:
+            if getattr(item, "ovrs_pdno", None) == sym.ticker:
+                qty = _dec(getattr(item, "ord_psbl_qty", None))
+                return qty if qty is not None else Decimal(0)
+        return Decimal(0)
 
     async def _iterate_balance(self) -> tuple[list, list]:
         """Walk all CTX_AREA_NK100 pages and return concatenated output1/output2."""
