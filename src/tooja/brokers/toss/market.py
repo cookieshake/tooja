@@ -7,7 +7,8 @@ No I/O or state beyond ``self._broker``.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from datetime import date, datetime
+from typing import TYPE_CHECKING, Literal
 
 from tooja.brokers.toss._call import call
 from tooja.brokers.toss._mappers import (
@@ -116,9 +117,9 @@ class TossMarketClient(MarketClient):
         self,
         symbol: Symbol | str,
         *,
-        interval: str,
-        start: object = None,
-        end: object = None,
+        interval: Literal["1m", "5m", "15m", "30m", "1h", "1d", "1w", "1M"],
+        start: date | datetime | str | None = None,
+        end: date | datetime | str | None = None,
         limit: int | None = None,
     ) -> list[OHLCV]:
         """Return OHLCV candles for *symbol* at the given *interval*.
@@ -144,8 +145,8 @@ class TossMarketClient(MarketClient):
             "count": min(limit or 100, 200),
         }
         if end is not None:
-            # end may be datetime or str; convert to ISO string if needed
-            if hasattr(end, "isoformat"):
+            # end may be date/datetime or str; convert to ISO string if needed
+            if isinstance(end, (date, datetime)):
                 query["before"] = end.isoformat()
             else:
                 query["before"] = str(end)

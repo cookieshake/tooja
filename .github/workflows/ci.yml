@@ -42,8 +42,5 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      # Advisory for now: a residual set of type errors is being driven to zero.
-      # Kept non-blocking so it surfaces regressions without gating merges yet.
       - name: Type check (pyright)
-        continue-on-error: true
         run: uv run pyright src/

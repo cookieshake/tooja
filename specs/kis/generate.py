@@ -117,6 +117,45 @@ def dedupe(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(seen.values())
 
 
+def dedupe_by_cd(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Dedup by propertyCd only, keeping first occurrence. Used when merging
+    same-named containers, where a duplicate cd would emit a duplicate field."""
+    seen = OrderedDict()
+    for it in items:
+        cd = it.get("propertyCd")
+        if cd not in seen:
+            seen[cd] = it
+    return list(seen.values())
+
+
+def merge_same_named_containers(
+    groups: list[tuple[dict[str, Any] | None, list[dict[str, Any]]]],
+) -> list[tuple[dict[str, Any] | None, list[dict[str, Any]]]]:
+    """Collapse parent groups that share a propertyCd into one.
+
+    KIS occasionally repeats the same output container (e.g. a legacy block and a
+    "new TR" block both named output1/2/3). They arrive as separate top-level
+    groups with the same propertyCd; rendering both produces duplicate item
+    classes and fields, where the later silently shadows the earlier (so the
+    earlier block's fields become unreachable). Merge them into a single group
+    with the union of their children (by field name, first occurrence wins)."""
+    out: list[tuple[dict[str, Any] | None, list[dict[str, Any]]]] = []
+    index_by_cd: dict[str, int] = {}
+    for parent, children in groups:
+        if parent is None:
+            out.append((parent, children))
+            continue
+        cd = parent["propertyCd"]
+        if cd in index_by_cd:
+            idx = index_by_cd[cd]
+            prev_parent, prev_children = out[idx]
+            out[idx] = (prev_parent, dedupe_by_cd(prev_children + children))
+        else:
+            index_by_cd[cd] = len(out)
+            out.append((parent, list(children)))
+    return out
+
+
 def order_key(s: str) -> tuple[float, ...]:
     """``006.001`` -> (6.0, 1.0); ``007`` -> (7.0,). For stable sorting."""
     parts = (s or "0").split(".")
@@ -213,6 +252,7 @@ def render_body_class(class_name: str, base: str,
     item_classes: list[str] = []
     field_lines: list[str] = []
 
+    groups = merge_same_named_containers(groups)
     for parent, children in groups:
         if parent is None:
             for c in children:

@@ -112,7 +112,7 @@ def _parse_kst_date(s: str) -> date | None:
         return None
 
 
-def _parse_kst_datetime(d: str, t: str | None = None) -> datetime | None:
+def _parse_kst_datetime(d: str | None, t: str | None = None) -> datetime | None:
     """KIS uses YYYYMMDD + HHMMSS, KST. Return tz-aware UTC.
 
     Returns None when `t` is missing so callers' `... or _utc_now()` fallbacks

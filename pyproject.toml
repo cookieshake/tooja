@@ -72,7 +72,6 @@ target-version = "py313"
 include = ["src"]
 pythonVersion = "3.13"
 typeCheckingMode = "basic"
-# Driving the residual error count to zero is tracked work; see CI typecheck job.
 
 [tool.coverage.run]
 source = ["src/tooja"]
