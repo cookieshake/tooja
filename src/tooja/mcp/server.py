@@ -33,9 +33,9 @@ def build_server(
 
     @asynccontextmanager
     async def lifespan(_server: "FastMCP"):  # type: ignore[misc]
-        for acc in registry.all():
-            await acc.broker.open()
         try:
+            for acc in registry.all():
+                await acc.broker.open()
             yield {}
         finally:
             await registry.aclose()
