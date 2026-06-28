@@ -101,3 +101,24 @@ async def test_aclose_closes_all_even_if_one_raises():
 
     # Second broker should still be closed
     assert b.broker.closed is True  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_aclose_groups_multiple_close_errors():
+    a = _acc("a")
+    b = _acc("b")
+    reg = Registry({"a": a, "b": b})
+
+    async def raising_close_a() -> None:
+        raise RuntimeError("broker a failed")
+
+    async def raising_close_b() -> None:
+        raise ValueError("broker b failed")
+
+    a.broker.close = raising_close_a  # type: ignore[assignment]
+    b.broker.close = raising_close_b  # type: ignore[assignment]
+
+    with pytest.raises(ExceptionGroup) as exc_info:
+        await reg.aclose()
+
+    assert len(exc_info.value.exceptions) == 2

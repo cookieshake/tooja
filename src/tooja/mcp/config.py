@@ -59,7 +59,7 @@ class McpConfig(BaseModel):
     @model_validator(mode="after")
     def _non_empty(self) -> McpConfig:
         if not self.accounts:
-            raise ValueError("no accounts configured")
+            raise ConfigError("no accounts configured", broker="mcp")
         return self
 
 

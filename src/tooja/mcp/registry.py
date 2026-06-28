@@ -53,14 +53,16 @@ class Registry:
         return list(self._accounts.values())
 
     async def aclose(self) -> None:
-        errors: list[BaseException] = []
+        errors: list[Exception] = []
         for acc in self._accounts.values():
             try:
                 await acc.broker.close()
-            except BaseException as exc:  # noqa: BLE001 — every broker must be closed; re-raise after
+            except Exception as exc:  # noqa: BLE001 — every broker must be closed; re-raise after
                 errors.append(exc)
         if errors:
-            raise errors[0]
+            if len(errors) == 1:
+                raise errors[0]
+            raise ExceptionGroup("failed to close one or more brokers", errors)
 
 
 def _default_factory(cfg: AccountConfig) -> Broker:

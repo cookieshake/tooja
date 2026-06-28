@@ -31,7 +31,7 @@ def test_account_union_discriminates_on_broker():
 
 
 def test_empty_accounts_rejected():
-    with pytest.raises(ValueError):
+    with pytest.raises(ConfigError):
         McpConfig.model_validate({"accounts": {}})
 
 

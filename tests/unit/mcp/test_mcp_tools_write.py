@@ -22,6 +22,22 @@ def _gate() -> ConfirmGate:
 
 
 @pytest.mark.asyncio
+async def test_create_limit_without_price_rejected():
+    fb = FakeBroker()
+
+    async def must_not_be_called(req):
+        raise AssertionError("broker must not be called when price is missing")
+
+    fb.orders.create = must_not_be_called  # type: ignore[method-assign]
+    out = await orders_tools.create(
+        _reg(fb, trading=True), _gate(), None,
+        symbol="005930", side="buy", qty="10", type="limit",
+    )
+    assert out["status"] == "rejected"
+    assert out["reason"] == "price_required"
+
+
+@pytest.mark.asyncio
 async def test_create_rejected_when_trading_disabled():
     out = await orders_tools.create(
         _reg(FakeBroker(), trading=False), _gate(), None,

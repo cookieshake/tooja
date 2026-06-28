@@ -101,6 +101,8 @@ async def create(
         if (type == "limit" and price is not None)
         else None
     )
+    if type == "limit" and price_money is None:
+        return rejection("price_required", account=acc.name, detail="a limit order requires a price")
     payload = {
         "tool": "orders_create", "symbol": symbol, "side": side, "qty": qty,
         "type": type, "price": price, "currency": currency, "tif": tif,
@@ -125,7 +127,8 @@ async def create(
     order_side = OrderSide(side)
     req: OrderRequest
     if type == "limit":
-        assert price_money is not None
+        if price_money is None:
+            return rejection("price_required", account=acc.name)
         req = LimitOrder(symbol=sym, side=order_side, qty=qty_d,
                          price=price_money, time_in_force=TimeInForce(tif))
     else:

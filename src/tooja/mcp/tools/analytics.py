@@ -37,10 +37,10 @@ async def program_trading(
 ) -> Any:
     broker = reg.resolve(account).broker
     target: Any = symbol_or_market
-    if symbol_or_market in Exchange.__members__ or symbol_or_market in {
-        e.value for e in Exchange
-    }:
+    try:
         target = Exchange(symbol_or_market)
+    except ValueError:
+        pass
     try:
         return to_json(
             await broker.analytics.program_trading(target, since=_d(since), until=_d(until))
