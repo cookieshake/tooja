@@ -79,6 +79,22 @@ async def test_create_invalid_order_type_rejected():
 
 
 @pytest.mark.asyncio
+async def test_create_invalid_tif_rejected():
+    fb = FakeBroker()
+
+    async def must_not_be_called(req):
+        raise AssertionError("broker must not be called for invalid tif")
+
+    fb.orders.create = must_not_be_called  # type: ignore[method-assign]
+    out = await orders_tools.create(
+        _reg(fb, trading=True), _gate(), None,
+        symbol="005930", side="buy", qty="10", type="limit", price="70000", tif="ZZZ",
+    )
+    assert out["status"] == "rejected"
+    assert out["reason"] == "invalid_input"
+
+
+@pytest.mark.asyncio
 async def test_create_first_call_returns_preview_no_execution():
     fb = FakeBroker()
     called = {"n": 0}

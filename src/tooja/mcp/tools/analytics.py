@@ -30,7 +30,7 @@ async def investor_flows(
         )
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
 
@@ -49,7 +49,7 @@ async def program_trading(
         )
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
 
@@ -63,7 +63,7 @@ async def short_selling(
         )
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
 
@@ -77,7 +77,7 @@ async def margin_balance(
         )
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
 
@@ -91,7 +91,7 @@ async def securities_lending(
         )
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
 

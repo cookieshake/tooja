@@ -22,7 +22,7 @@ async def get_stock(reg: "Registry", account: str | None, symbol: str) -> Any:
         return to_json(await broker.info.get_stock(symbol))
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
 
@@ -32,7 +32,7 @@ async def search(reg: "Registry", account: str | None, query: str) -> Any:
         return to_json(await broker.info.search(query))
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
 
@@ -48,7 +48,7 @@ async def get_financials(
         )
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
 
@@ -61,7 +61,7 @@ async def get_dividends(
         return to_json(await broker.info.get_dividends(symbol, since=since_d))
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
 
@@ -71,7 +71,7 @@ async def get_warnings(reg: "Registry", account: str | None, symbol: str) -> Any
         return to_json(await broker.info.get_warnings(symbol))
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
 
@@ -82,7 +82,7 @@ async def is_holiday(reg: "Registry", account: str | None, day: str) -> Any:
         return {"date": day, "is_holiday": result}
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
 

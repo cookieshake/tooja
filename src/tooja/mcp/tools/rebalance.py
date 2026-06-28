@@ -40,7 +40,7 @@ async def plan(reg: "Registry", account: str | None, targets: list[dict[str, str
         return to_json(await rb.compute_plan())
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
 
@@ -59,7 +59,7 @@ async def execute(
         computed = await rb.compute_plan()
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
     payload = {"tool": "rebalance_execute", "trades": _trades_payload(computed)}

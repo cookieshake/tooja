@@ -27,7 +27,7 @@ async def get(
         )
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": exc.__class__.__name__, "message": str(exc)}
 
 

@@ -41,7 +41,7 @@ async def list_orders(
         )
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
 
@@ -51,7 +51,7 @@ async def get_order(reg: "Registry", account: str | None, order_id: str) -> Any:
         return to_json(await broker.orders.get(order_id))
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
 
@@ -69,7 +69,7 @@ async def list_fills(
         )
     except BrokerError as exc:
         return format_broker_error(exc)
-    except (ValueError, ArithmeticError, KeyError) as exc:
+    except (ValueError, TypeError, ArithmeticError, KeyError) as exc:
         return {"error": type(exc).__name__, "message": str(exc)}
 
 
@@ -97,7 +97,8 @@ async def create(
             if (type == "limit" and price is not None)
             else None
         )
-    except (ValueError, ArithmeticError) as exc:
+        tif_enum = TimeInForce(tif)
+    except (ValueError, TypeError, ArithmeticError) as exc:
         return rejection("invalid_input", account=acc.name, detail=str(exc))
 
     if type == "limit" and price_money is None:
@@ -123,7 +124,7 @@ async def create(
         if price_money is None:
             return rejection("price_required", account=acc.name)
         req = LimitOrder(symbol=sym, side=order_side, qty=qty_d,
-                         price=price_money, time_in_force=TimeInForce(tif))
+                         price=price_money, time_in_force=tif_enum)
     else:
         req = MarketOrder(symbol=sym, side=order_side, qty=qty_d)
     try:
@@ -164,7 +165,7 @@ async def replace(
     try:
         qty_d = Decimal(qty) if qty is not None else None
         price_d = Decimal(price) if price is not None else None
-    except ArithmeticError as exc:
+    except (ValueError, TypeError, ArithmeticError) as exc:
         return rejection("invalid_input", account=acc.name, detail=str(exc))
     payload = {"tool": "orders_replace", "order_id": order_id, "qty": qty, "price": price}
     details = {"order_id": order_id, "new_qty": qty, "new_price": price}
