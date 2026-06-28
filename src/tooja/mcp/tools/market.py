@@ -22,6 +22,8 @@ async def get_quote(reg: "Registry", account: str | None, symbol: str) -> Any:
         return to_json(await broker.market.get_quote(symbol))
     except BrokerError as exc:
         return format_broker_error(exc)
+    except (ValueError, ArithmeticError, KeyError) as exc:
+        return {"error": type(exc).__name__, "message": str(exc)}
 
 
 async def get_quotes(reg: "Registry", account: str | None, symbols: list[str]) -> Any:
@@ -30,6 +32,8 @@ async def get_quotes(reg: "Registry", account: str | None, symbols: list[str]) -
         return to_json(await broker.market.get_quotes(list(symbols)))
     except BrokerError as exc:
         return format_broker_error(exc)
+    except (ValueError, ArithmeticError, KeyError) as exc:
+        return {"error": type(exc).__name__, "message": str(exc)}
 
 
 async def get_ohlcv(
@@ -50,6 +54,8 @@ async def get_ohlcv(
         )
     except BrokerError as exc:
         return format_broker_error(exc)
+    except (ValueError, ArithmeticError, KeyError) as exc:
+        return {"error": type(exc).__name__, "message": str(exc)}
 
 
 async def get_orderbook(
@@ -60,6 +66,8 @@ async def get_orderbook(
         return to_json(await broker.market.get_orderbook(symbol, depth=depth))
     except BrokerError as exc:
         return format_broker_error(exc)
+    except (ValueError, ArithmeticError, KeyError) as exc:
+        return {"error": type(exc).__name__, "message": str(exc)}
 
 
 def register(mcp: "FastMCP", registry: "Registry") -> None:

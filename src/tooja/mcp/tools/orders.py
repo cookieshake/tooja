@@ -31,8 +31,8 @@ async def list_orders(
     symbol: str | None = None, since: str | None = None, until: str | None = None,
 ) -> Any:
     broker = reg.resolve(account).broker
-    sym = Symbol.parse(symbol) if symbol else None
     try:
+        sym = Symbol.parse(symbol) if symbol else None
         return to_json(
             await broker.orders.list_orders(
                 status=cast(Literal["all", "open", "closed"], status), symbol=sym,
@@ -41,6 +41,8 @@ async def list_orders(
         )
     except BrokerError as exc:
         return format_broker_error(exc)
+    except (ValueError, ArithmeticError, KeyError) as exc:
+        return {"error": type(exc).__name__, "message": str(exc)}
 
 
 async def get_order(reg: "Registry", account: str | None, order_id: str) -> Any:
@@ -49,6 +51,8 @@ async def get_order(reg: "Registry", account: str | None, order_id: str) -> Any:
         return to_json(await broker.orders.get(order_id))
     except BrokerError as exc:
         return format_broker_error(exc)
+    except (ValueError, ArithmeticError, KeyError) as exc:
+        return {"error": type(exc).__name__, "message": str(exc)}
 
 
 async def list_fills(
@@ -56,8 +60,8 @@ async def list_fills(
     since: str | None = None, until: str | None = None,
 ) -> Any:
     broker = reg.resolve(account).broker
-    sym = Symbol.parse(symbol) if symbol else None
     try:
+        sym = Symbol.parse(symbol) if symbol else None
         return to_json(
             await broker.orders.list_fills(
                 symbol=sym, since=_opt_date(since), until=_opt_date(until)
@@ -65,6 +69,8 @@ async def list_fills(
         )
     except BrokerError as exc:
         return format_broker_error(exc)
+    except (ValueError, ArithmeticError, KeyError) as exc:
+        return {"error": type(exc).__name__, "message": str(exc)}
 
 
 # ── create ──────────────────────────────────────────
@@ -82,12 +88,18 @@ async def create(
         return rejection("invalid_order_type", account=acc.name,
                          detail=f"order type must be 'limit' or 'market', got {type!r}")
 
-    qty_d = Decimal(qty)
-    price_money = (
-        Money(amount=Decimal(price), currency=Currency(currency))
-        if (type == "limit" and price is not None)
-        else None
-    )
+    try:
+        sym = Symbol.parse(symbol)
+        order_side = OrderSide(side)
+        qty_d = Decimal(qty)
+        price_money = (
+            Money(amount=Decimal(price), currency=Currency(currency))
+            if (type == "limit" and price is not None)
+            else None
+        )
+    except (ValueError, ArithmeticError) as exc:
+        return rejection("invalid_input", account=acc.name, detail=str(exc))
+
     if type == "limit" and price_money is None:
         return rejection("price_required", account=acc.name, detail="a limit order requires a price")
 
@@ -100,13 +112,12 @@ async def create(
         "price": to_json(price_money),
     }
     if type == "limit":
-        assert price_money is not None  # guarded by price_required rejection above
+        if price_money is None:
+            return rejection("price_required", account=acc.name)
         details["estimated_value"] = to_json(price_money * qty_d)
     if confirm_token is None or not gate.verify(acc.name, payload, confirm_token):
         return preview(acc.name, "orders_create", details, gate.issue(acc.name, payload))
 
-    sym = Symbol.parse(symbol)
-    order_side = OrderSide(side)
     req: OrderRequest
     if type == "limit":
         if price_money is None:
@@ -150,16 +161,17 @@ async def replace(
     acc = reg.resolve(account)
     if not acc.trading:
         return rejection("trading_disabled", account=acc.name)
+    try:
+        qty_d = Decimal(qty) if qty is not None else None
+        price_d = Decimal(price) if price is not None else None
+    except ArithmeticError as exc:
+        return rejection("invalid_input", account=acc.name, detail=str(exc))
     payload = {"tool": "orders_replace", "order_id": order_id, "qty": qty, "price": price}
     details = {"order_id": order_id, "new_qty": qty, "new_price": price}
     if confirm_token is None or not gate.verify(acc.name, payload, confirm_token):
         return preview(acc.name, "orders_replace", details, gate.issue(acc.name, payload))
     try:
-        order = await acc.broker.orders.replace(
-            order_id,
-            qty=Decimal(qty) if qty is not None else None,
-            price=Decimal(price) if price is not None else None,
-        )
+        order = await acc.broker.orders.replace(order_id, qty=qty_d, price=price_d)
         return {"status": "executed", "order": to_json(order)}
     except BrokerError as exc:
         return format_broker_error(exc)

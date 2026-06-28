@@ -15,6 +15,7 @@ from tooja.mcp.registry import Account, Registry
 from tooja.mcp.tools import account as account_tools
 from tooja.mcp.tools import analytics as analytics_tools
 from tooja.mcp.tools import market as market_tools
+from tooja.mcp.tools import rebalance as rebalance_tools
 from tests.unit.mcp.conftest import FakeBroker
 
 
@@ -79,3 +80,27 @@ async def test_analytics_investor_flows_serializes():
         _reg(fb), None, "005930", "2026-01-01", "2026-01-31"
     )
     assert out[0]["foreign_net"] == {"amount": "2", "currency": "KRW"}
+
+
+@pytest.mark.asyncio
+async def test_analytics_invalid_date_returns_error():
+    fb = FakeBroker()
+
+    async def must_not_be_called(symbol, *, since, until):
+        raise AssertionError("broker must not be called when date parse fails")
+
+    fb.analytics.investor_flows = must_not_be_called  # type: ignore[method-assign]
+    out = await analytics_tools.investor_flows(
+        _reg(fb), None, "005930", "not-a-date", "2026-01-31"
+    )
+    assert "error" in out
+    assert out["error"] == "ValueError"
+
+
+@pytest.mark.asyncio
+async def test_rebalance_plan_invalid_target_returns_error(monkeypatch):
+    fb = FakeBroker()
+    out = await rebalance_tools.plan(
+        _reg(fb), None, [{"symbol": "005930", "weight": "abc"}]
+    )
+    assert "error" in out

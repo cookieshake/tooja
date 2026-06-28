@@ -306,7 +306,6 @@ Configuration is loaded from environment variables by default, or from a TOML fi
 | `TOOJA_MCP_HTS_ID` | HTS user ID |
 | `TOOJA_MCP_ACNT_PRDT_CD` | Account product code (default `01`) |
 | `TOOJA_MCP_TRADING` | `true` / `false` — enable write tools (default `false`) |
-| `TOOJA_MCP_MAX_ORDER_VALUE` | Optional cap on new order value in account currency |
 
 For **Toss**, replace `APP_KEY/APP_SECRET/CANO/HTS_ID/ACNT_PRDT_CD` with
 `TOOJA_MCP_CLIENT_ID`, `TOOJA_MCP_CLIENT_SECRET`, and `TOOJA_MCP_ACCOUNT_SEQ`.
@@ -360,8 +359,7 @@ or `~/.claude.json`):
         "TOOJA_MCP_APP_SECRET": "<your-app-secret>",
         "TOOJA_MCP_CANO": "<your-cano>",
         "TOOJA_MCP_HTS_ID": "<your-hts-id>",
-        "TOOJA_MCP_TRADING": "true",
-        "TOOJA_MCP_MAX_ORDER_VALUE": "1000000"
+        "TOOJA_MCP_TRADING": "true"
       }
     },
     "tooja-demo": {

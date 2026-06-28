@@ -21,6 +21,8 @@ async def get_balance(reg: "Registry", account: str | None) -> Any:
         return to_json(await broker.account.get_balance())
     except BrokerError as exc:
         return format_broker_error(exc)
+    except (ValueError, ArithmeticError, KeyError) as exc:
+        return {"error": type(exc).__name__, "message": str(exc)}
 
 
 async def get_positions(reg: "Registry", account: str | None) -> Any:
@@ -29,6 +31,8 @@ async def get_positions(reg: "Registry", account: str | None) -> Any:
         return to_json(await broker.account.get_positions())
     except BrokerError as exc:
         return format_broker_error(exc)
+    except (ValueError, ArithmeticError, KeyError) as exc:
+        return {"error": type(exc).__name__, "message": str(exc)}
 
 
 async def get_buying_power(reg: "Registry", account: str | None, currency: str = "KRW") -> Any:
@@ -37,6 +41,8 @@ async def get_buying_power(reg: "Registry", account: str | None, currency: str =
         return to_json(await broker.account.get_buying_power(currency=Currency(currency)))
     except BrokerError as exc:
         return format_broker_error(exc)
+    except (ValueError, ArithmeticError, KeyError) as exc:
+        return {"error": type(exc).__name__, "message": str(exc)}
 
 
 async def get_sellable_quantity(reg: "Registry", account: str | None, symbol: str) -> Any:
@@ -46,6 +52,8 @@ async def get_sellable_quantity(reg: "Registry", account: str | None, symbol: st
         return {"symbol": symbol, "quantity": str(qty)}
     except BrokerError as exc:
         return format_broker_error(exc)
+    except (ValueError, ArithmeticError, KeyError) as exc:
+        return {"error": type(exc).__name__, "message": str(exc)}
 
 
 def register(mcp: "FastMCP", registry: "Registry") -> None:
