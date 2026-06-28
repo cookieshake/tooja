@@ -19,7 +19,7 @@ from tests.unit.mcp.conftest import FakeBroker
 
 
 def _reg(broker: FakeBroker) -> Registry:
-    return Registry({"default": Account("default", broker, False, None)})
+    return Registry({"default": Account("default", broker, False)})
 
 
 @pytest.mark.asyncio

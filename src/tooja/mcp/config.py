@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 import tomllib
 from collections.abc import Mapping
-from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -27,7 +26,6 @@ def interpolate_env(value: str, environ: Mapping[str, str]) -> str:
 
 class _AccountCommon(BaseModel):
     trading: bool = False
-    max_order_value: Decimal | None = None
 
 
 class KisAccountConfig(_AccountCommon):
@@ -85,7 +83,7 @@ _BOOL_FIELDS = {"trading"}
 # fields that are not credential strings — parsed specially
 _KNOWN_FIELDS = {
     "broker", "env", "app_key", "app_secret", "cano", "hts_id", "acnt_prdt_cd",
-    "client_id", "client_secret", "account_seq", "trading", "max_order_value",
+    "client_id", "client_secret", "account_seq", "trading",
 }
 
 

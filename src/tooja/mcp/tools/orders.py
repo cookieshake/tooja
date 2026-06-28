@@ -1,11 +1,11 @@
 # src/tooja/mcp/tools/orders.py
-"""Order read tools + write tools (trading opt-in, two-phase confirm, value cap)."""
+"""Order read tools + write tools (trading opt-in, two-phase confirm)."""
 
 from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from tooja.core.enums import Currency, OrderSide, TimeInForce
 from tooja.core.errors import BrokerError
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
     from tooja.mcp.confirm import ConfirmGate
-    from tooja.mcp.registry import Account, Registry
+    from tooja.mcp.registry import Registry
 
 
 # ── read ────────────────────────────────────────────
@@ -31,10 +31,11 @@ async def list_orders(
     symbol: str | None = None, since: str | None = None, until: str | None = None,
 ) -> Any:
     broker = reg.resolve(account).broker
+    sym = Symbol.parse(symbol) if symbol else None
     try:
         return to_json(
             await broker.orders.list_orders(
-                status=status, symbol=symbol,  # type: ignore[arg-type]
+                status=cast(Literal["all", "open", "closed"], status), symbol=sym,
                 since=_opt_date(since), until=_opt_date(until),
             )
         )
@@ -55,33 +56,15 @@ async def list_fills(
     since: str | None = None, until: str | None = None,
 ) -> Any:
     broker = reg.resolve(account).broker
+    sym = Symbol.parse(symbol) if symbol else None
     try:
         return to_json(
             await broker.orders.list_fills(
-                symbol=symbol, since=_opt_date(since), until=_opt_date(until)
+                symbol=sym, since=_opt_date(since), until=_opt_date(until)
             )
         )
     except BrokerError as exc:
         return format_broker_error(exc)
-
-
-# ── write helpers ───────────────────────────────────
-async def _estimate_value(acc: "Account", symbol: str, qty: Decimal, price: Money | None) -> Money:
-    if price is not None:
-        return price * qty
-    quote = await acc.broker.market.get_quote(symbol)
-    return quote.price * qty
-
-
-def _cap_rejection(acc: "Account", estimate: Money) -> dict[str, Any] | None:
-    if acc.max_order_value is not None and estimate.amount > acc.max_order_value:
-        return rejection(
-            "max_order_value_exceeded",
-            account=acc.name,
-            limit=str(acc.max_order_value),
-            estimated=str(estimate.amount),
-        )
-    return None
 
 
 # ── create ──────────────────────────────────────────
@@ -95,6 +78,10 @@ async def create(
     if not acc.trading:
         return rejection("trading_disabled", account=acc.name)
 
+    if type not in ("limit", "market"):
+        return rejection("invalid_order_type", account=acc.name,
+                         detail=f"order type must be 'limit' or 'market', got {type!r}")
+
     qty_d = Decimal(qty)
     price_money = (
         Money(amount=Decimal(price), currency=Currency(currency))
@@ -103,23 +90,18 @@ async def create(
     )
     if type == "limit" and price_money is None:
         return rejection("price_required", account=acc.name, detail="a limit order requires a price")
+
     payload = {
         "tool": "orders_create", "symbol": symbol, "side": side, "qty": qty,
         "type": type, "price": price, "currency": currency, "tif": tif,
     }
-    try:
-        estimate = await _estimate_value(acc, symbol, qty_d, price_money)
-    except BrokerError as exc:
-        return format_broker_error(exc)
-
-    capped = _cap_rejection(acc, estimate)
-    if capped is not None:
-        return capped
-
-    details = {
+    details: dict[str, Any] = {
         "symbol": symbol, "side": side, "qty": qty, "type": type,
-        "price": to_json(price_money), "estimated_value": to_json(estimate),
+        "price": to_json(price_money),
     }
+    if type == "limit":
+        assert price_money is not None  # guarded by price_required rejection above
+        details["estimated_value"] = to_json(price_money * qty_d)
     if confirm_token is None or not gate.verify(acc.name, payload, confirm_token):
         return preview(acc.name, "orders_create", details, gate.issue(acc.name, payload))
 

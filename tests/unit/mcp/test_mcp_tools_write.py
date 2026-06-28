@@ -13,8 +13,8 @@ from tooja.mcp.tools import orders as orders_tools
 from tests.unit.mcp.conftest import FakeBroker
 
 
-def _reg(broker: FakeBroker, *, trading: bool, cap: Decimal | None = None) -> Registry:
-    return Registry({"default": Account("default", broker, trading, cap)})
+def _reg(broker: FakeBroker, *, trading: bool) -> Registry:
+    return Registry({"default": Account("default", broker, trading)})
 
 
 def _gate() -> ConfirmGate:
@@ -44,6 +44,22 @@ async def test_create_rejected_when_trading_disabled():
         symbol="005930", side="buy", qty="10", type="limit", price="70000",
     )
     assert out["status"] == "rejected" and out["reason"] == "trading_disabled"
+
+
+@pytest.mark.asyncio
+async def test_create_invalid_order_type_rejected():
+    fb = FakeBroker()
+
+    async def must_not_be_called(req):
+        raise AssertionError("broker must not be called for invalid order type")
+
+    fb.orders.create = must_not_be_called  # type: ignore[method-assign]
+    out = await orders_tools.create(
+        _reg(fb, trading=True), _gate(), None,
+        symbol="005930", side="buy", qty="10", type="limt",
+    )
+    assert out["status"] == "rejected"
+    assert out["reason"] == "invalid_order_type"
 
 
 @pytest.mark.asyncio
@@ -85,16 +101,6 @@ async def test_create_executes_with_valid_token():
         type="limit", price="70000", confirm_token=prev["confirm_token"],
     )
     assert out["status"] == "executed" and out["order"]["order_id"] == "OID"
-
-
-@pytest.mark.asyncio
-async def test_create_value_cap_blocks_preview():
-    fb = FakeBroker()
-    out = await orders_tools.create(
-        _reg(fb, trading=True, cap=Decimal("100000")), _gate(), None,
-        symbol="005930", side="buy", qty="10", type="limit", price="70000",
-    )
-    assert out["status"] == "rejected" and out["reason"] == "max_order_value_exceeded"
 
 
 @pytest.mark.asyncio

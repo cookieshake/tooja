@@ -11,7 +11,7 @@ from tests.unit.mcp.conftest import FakeBroker
 
 
 def _acc(name: str, *, trading: bool = False) -> Account:
-    return Account(name=name, broker=FakeBroker(name), trading=trading, max_order_value=None)
+    return Account(name=name, broker=FakeBroker(name), trading=trading)
 
 
 def test_resolve_single_defaults_to_only_account():
@@ -45,11 +45,11 @@ async def test_aclose_closes_all():
 
 
 def test_has_kis_true_when_kis_account_present():
-    kis_acc = Account("kis_main", FakeBroker("kis"), False, None)
+    kis_acc = Account("kis_main", FakeBroker("kis"), False)
     reg_kis = Registry({"a": kis_acc})
     assert reg_kis.has_kis is True
 
-    non_kis_acc = Account("toss_main", FakeBroker("toss"), False, None)
+    non_kis_acc = Account("toss_main", FakeBroker("toss"), False)
     reg_non_kis = Registry({"a": non_kis_acc})
     assert reg_non_kis.has_kis is False
 

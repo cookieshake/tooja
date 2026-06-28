@@ -391,7 +391,6 @@ virtual environment.
 |---|---|
 | **Read-only by default** | Order and rebalance *write* tools are only registered when `TOOJA_MCP_TRADING=true` for that account. With `trading` off the server exposes market data, balance, and order history but cannot place or modify orders. |
 | **Two-phase confirm** | Every write tool requires two calls. The first call returns a preview of the intended action plus a `confirm_token`. Calling again with that exact `confirm_token` executes the action. Changing any parameter (symbol, qty, price, …) invalidates the token and forces a new preview. |
-| **Order value cap** | Set `TOOJA_MCP_MAX_ORDER_VALUE` (or `max_order_value` in TOML) to reject new orders whose estimated value exceeds the limit. The cap applies only to `orders_create`; it does not affect cancel, replace, or rebalance. |
 
 > **Note:** Real-time streaming (WebSocket quotes, trades, orderbook) is intentionally
 > not exposed in this version of the MCP server.

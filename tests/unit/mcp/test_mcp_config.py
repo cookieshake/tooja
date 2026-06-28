@@ -1,5 +1,3 @@
-from decimal import Decimal
-
 import pytest
 
 from tooja.core.errors import ConfigError
@@ -46,7 +44,6 @@ def test_load_toml_with_env_interpolation(tmp_path):
         'cano = "12345678"\n'
         'hts_id = "id"\n'
         'trading = true\n'
-        'max_order_value = 1000000\n'
         '[accounts.toss1]\n'
         'broker = "toss"\n'
         'client_id = "c"\n'
@@ -54,7 +51,6 @@ def test_load_toml_with_env_interpolation(tmp_path):
     )
     cfg = load_toml(str(p), {"K_KEY": "real-key"})
     assert cfg.accounts["main"].app_key == "real-key"
-    assert cfg.accounts["main"].max_order_value == Decimal("1000000")
     assert isinstance(cfg.accounts["toss1"], TossAccountConfig)
 
 
@@ -63,12 +59,11 @@ def test_load_from_env_single_flat():
         "TOOJA_MCP_BROKER": "kis", "TOOJA_MCP_ENV": "demo",
         "TOOJA_MCP_APP_KEY": "k", "TOOJA_MCP_APP_SECRET": "s",
         "TOOJA_MCP_CANO": "12345678", "TOOJA_MCP_HTS_ID": "id",
-        "TOOJA_MCP_TRADING": "1", "TOOJA_MCP_MAX_ORDER_VALUE": "500000",
+        "TOOJA_MCP_TRADING": "1",
     }
     cfg = load_from_env(env)
     acc = cfg.accounts["default"]
     assert acc.broker == "kis" and acc.trading is True
-    assert str(acc.max_order_value) == "500000"
 
 
 def test_load_from_env_multi_prefixed():

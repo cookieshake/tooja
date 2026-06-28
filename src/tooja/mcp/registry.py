@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from decimal import Decimal
 
 from tooja.brokers.kis.broker import KisBroker
 from tooja.brokers.toss.broker import TossBroker
@@ -18,7 +17,6 @@ class Account:
     name: str
     broker: Broker
     trading: bool
-    max_order_value: Decimal | None
 
 
 class Registry:
@@ -94,7 +92,6 @@ def build_registry(
             name=name,
             broker=broker_factory(cfg),
             trading=cfg.trading,
-            max_order_value=cfg.max_order_value,
         )
         for name, cfg in config.accounts.items()
     }
