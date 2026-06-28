@@ -23,7 +23,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --extra mcp
 
       - name: Lint (ruff)
         run: uv run ruff check src/ tests/
@@ -40,7 +40,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --extra mcp
 
       - name: Type check (pyright)
         run: uv run pyright src/
