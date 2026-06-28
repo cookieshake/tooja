@@ -14,12 +14,12 @@ if TYPE_CHECKING:
 def register_all(mcp: "FastMCP", registry: "Registry", gate: "ConfirmGate") -> None:
     from tooja.mcp.tools import (
         account,
-        analytics,  # type: ignore[attr-defined]
+        analytics,
         info,
         market,
-        orders,  # type: ignore[attr-defined]
+        orders,
         rankings,
-        rebalance,  # type: ignore[attr-defined]
+        rebalance,
     )
 
     market.register(mcp, registry)
