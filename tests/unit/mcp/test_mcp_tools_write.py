@@ -209,3 +209,56 @@ async def test_replace_executes_with_valid_token():
     )
     assert out["status"] == "executed" and out["order"]["order_id"] == "ROID"
     assert called["n"] == 1
+
+
+# ── rebalance two-phase ─────────────────────────────────────────────────────
+
+from tooja.core.enums import OrderSide as _Side
+from tooja.portfolio.rebalance.models import PlannedTrade, RebalancePlan
+from tooja.mcp.tools import rebalance as rebalance_tools
+
+
+def _plan() -> RebalancePlan:
+    return RebalancePlan(
+        trades=[PlannedTrade(symbol=Symbol(ticker="005930"), side=_Side.BUY,
+                             qty=Decimal("3"))],
+        expected_drift=Decimal("0.01"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_rebalance_execute_previews_then_executes(monkeypatch):
+    fb = FakeBroker()
+
+    class FakeRebalancer:
+        def __init__(self, broker, targets, **kw):
+            pass
+
+        async def compute_plan(self):
+            return _plan()
+
+        async def execute(self, plan):
+            return [Order(order_id="RB1", symbol=Symbol(ticker="005930"),
+                          side=_Side.BUY, qty=Decimal("3"), type="market",
+                          status=OrderStatus.OPEN, submitted_at=datetime(2026, 1, 2))]
+
+    monkeypatch.setattr(rebalance_tools, "Rebalancer", FakeRebalancer)
+
+    gate = _gate()
+    reg = _reg(fb, trading=True)
+    targets = [{"symbol": "005930", "weight": "1.0"}]
+    prev = await rebalance_tools.execute(reg, gate, None, targets)
+    assert prev["status"] == "needs_confirmation"
+    out = await rebalance_tools.execute(
+        reg, gate, None, targets, confirm_token=prev["confirm_token"]
+    )
+    assert out["status"] == "executed" and out["orders"][0]["order_id"] == "RB1"
+
+
+@pytest.mark.asyncio
+async def test_rebalance_execute_rejected_when_trading_disabled():
+    out = await rebalance_tools.execute(
+        _reg(FakeBroker(), trading=False), _gate(), None,
+        [{"symbol": "005930", "weight": "1.0"}],
+    )
+    assert out["status"] == "rejected"
