@@ -269,6 +269,132 @@ trades become marketable limit orders at the live quote ± `limit_offset`
 
 ---
 
+## MCP server
+
+`tooja` ships an [MCP](https://modelcontextprotocol.io/) server so AI assistants
+(Claude Desktop, Claude Code, and any MCP-capable host) can query market data, inspect
+account state, and place trades on your behalf — with strong safety defaults.
+
+### Install
+
+```bash
+pip install tooja[mcp]
+# or, with uv:
+uv add "tooja[mcp]"
+```
+
+### Run
+
+```bash
+python -m tooja.mcp        # stdio transport (the standard MCP mode)
+```
+
+### Configuration
+
+Configuration is loaded from environment variables by default, or from a TOML file when
+`TOOJA_MCP_CONFIG` is set.
+
+#### Single-account (KIS example)
+
+| Variable | Description |
+|---|---|
+| `TOOJA_MCP_BROKER` | `kis` |
+| `TOOJA_MCP_ENV` | `real` or `demo` |
+| `TOOJA_MCP_APP_KEY` | KIS app key |
+| `TOOJA_MCP_APP_SECRET` | KIS app secret |
+| `TOOJA_MCP_CANO` | First 8 digits of the account number |
+| `TOOJA_MCP_HTS_ID` | HTS user ID |
+| `TOOJA_MCP_ACNT_PRDT_CD` | Account product code (default `01`) |
+| `TOOJA_MCP_TRADING` | `true` / `false` — enable write tools (default `false`) |
+
+For **Toss**, replace `APP_KEY/APP_SECRET/CANO/HTS_ID/ACNT_PRDT_CD` with
+`TOOJA_MCP_CLIENT_ID`, `TOOJA_MCP_CLIENT_SECRET`, and `TOOJA_MCP_ACCOUNT_SEQ`.
+
+#### Multi-account
+
+Set `TOOJA_MCP_ACCOUNTS=main,pension` and prefix each field with the account name in
+upper-case:
+
+```bash
+TOOJA_MCP_ACCOUNTS=main,pension
+TOOJA_MCP_MAIN_BROKER=kis
+TOOJA_MCP_MAIN_APP_KEY=...
+TOOJA_MCP_MAIN_APP_SECRET=...
+TOOJA_MCP_MAIN_CANO=...
+TOOJA_MCP_MAIN_HTS_ID=...
+TOOJA_MCP_MAIN_TRADING=true
+
+TOOJA_MCP_PENSION_BROKER=kis
+TOOJA_MCP_PENSION_APP_KEY=...
+TOOJA_MCP_PENSION_APP_SECRET=...
+TOOJA_MCP_PENSION_CANO=...
+TOOJA_MCP_PENSION_HTS_ID=...
+TOOJA_MCP_PENSION_TRADING=false
+```
+
+When more than one account is configured, tool calls require an `account` argument
+(`"main"` / `"pension"` etc.). With a single account it is optional and defaults to the
+only account.
+
+#### Optional TOML config
+
+Point `TOOJA_MCP_CONFIG=/path/to/config.toml` at a TOML file for structured config.
+`${ENV_VAR}` references inside the TOML are expanded from the process environment.
+
+### Claude Desktop / Claude Code integration
+
+Add a block like this to your MCP host's config (e.g. `~/.claude/claude_desktop_config.json`
+or `~/.claude.json`):
+
+```json
+{
+  "mcpServers": {
+    "tooja-real": {
+      "command": "python",
+      "args": ["-m", "tooja.mcp"],
+      "env": {
+        "TOOJA_MCP_BROKER": "kis",
+        "TOOJA_MCP_ENV": "real",
+        "TOOJA_MCP_APP_KEY": "<your-app-key>",
+        "TOOJA_MCP_APP_SECRET": "<your-app-secret>",
+        "TOOJA_MCP_CANO": "<your-cano>",
+        "TOOJA_MCP_HTS_ID": "<your-hts-id>",
+        "TOOJA_MCP_TRADING": "true"
+      }
+    },
+    "tooja-demo": {
+      "command": "python",
+      "args": ["-m", "tooja.mcp"],
+      "env": {
+        "TOOJA_MCP_BROKER": "kis",
+        "TOOJA_MCP_ENV": "demo",
+        "TOOJA_MCP_APP_KEY": "<your-demo-app-key>",
+        "TOOJA_MCP_APP_SECRET": "<your-demo-app-secret>",
+        "TOOJA_MCP_CANO": "<your-demo-cano>",
+        "TOOJA_MCP_HTS_ID": "<your-hts-id>",
+        "TOOJA_MCP_TRADING": "true"
+      }
+    }
+  }
+}
+```
+
+Each entry is an isolated server process — real and demo accounts never share state.
+If `python` is not in the system PATH, use the full path to the interpreter in your
+virtual environment.
+
+### Safety model
+
+| Layer | Mechanism |
+|---|---|
+| **Read-only by default** | Order and rebalance *write* tools are only registered when `TOOJA_MCP_TRADING=true` for that account. With `trading` off the server exposes market data, balance, and order history but cannot place or modify orders. |
+| **Two-phase confirm** | Every write tool requires two calls. The first call returns a preview of the intended action plus a `confirm_token`. Calling again with that exact `confirm_token` executes the action. Changing any parameter (symbol, qty, price, …) invalidates the token and forces a new preview. |
+
+> **Note:** Real-time streaming (WebSocket quotes, trades, orderbook) is intentionally
+> not exposed in this version of the MCP server.
+
+---
+
 ## Raw escape hatch
 
 For endpoints the common API doesn't cover, call each broker's native API directly via
