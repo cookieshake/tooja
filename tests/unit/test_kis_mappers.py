@@ -125,6 +125,22 @@ def test_balance_from_inquire():
     assert len(b.cash) == 1
 
 
+def test_balance_from_inquire_sets_orderable_cash_from_d2_settled():
+    # 퇴직연금-shaped summary: D+0 deposit is 0, real cash lives in D+2 예수금.
+    summary = _ns(dnca_tot_amt="0", prvs_rcdl_excc_amt="14560", tot_evlu_amt="25567380")
+    b = balance_from_inquire([], [summary], raw={})
+    assert {m.currency: m.amount for m in b.cash}[Currency.KRW] == Decimal("0")
+    assert {m.currency: m.amount for m in b.orderable_cash}[Currency.KRW] == Decimal("14560")
+
+
+def test_balance_from_inquire_orderable_cash_empty_when_d2_missing():
+    # Summary without prvs_rcdl_excc_amt (older/other shape) → no baseline, no crash.
+    summary = _ns(dnca_tot_amt="1000000", tot_evlu_amt="1705000")
+    b = balance_from_inquire([], [summary], raw={})
+    assert b.orderable_cash == []
+    assert {m.currency: m.amount for m in b.cash}[Currency.KRW] == Decimal("1000000")
+
+
 def test_map_order_status_codes():
     assert map_order_status("01", Decimal(10), Decimal(0)) == OrderStatus.OPEN
     assert map_order_status("02", Decimal(10), Decimal(3)) == OrderStatus.PARTIALLY_FILLED

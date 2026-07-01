@@ -352,14 +352,27 @@ def balance_from_inquire(output1: list[Any], output2: list[Any], raw: dict[str, 
     """Build Balance from inquire-balance output1 (positions) + output2 (summary)."""
     positions = [p for p in (position_from_balance_row(i) for i in output1) if p is not None]
     cash: list[Money] = []
+    orderable_cash: list[Money] = []
     total: Money | None = None
     if output2:
         head = output2[0]
         deposit = _money_krw(getattr(head, "dnca_tot_amt", None))
         if deposit is not None:
             cash.append(deposit)
+        # T+2 settled cash (prvs_rcdl_excc_amt = D+2 예수금) is the trade-available
+        # baseline for orderable_cash: it adds same-day sell proceeds (reusable at
+        # once) and nets same-day buys. Unlike inquire-psbl-order's nrcvb_buy_amt it
+        # is present even where that TR is blocked (e.g. 퇴직연금), so pension accounts
+        # no longer read as zero cash. account._domestic_balance still overrides this
+        # baseline with nrcvb_buy_amt when the TR succeeds (nrcvb-first).
+        settled = _money_krw(getattr(head, "prvs_rcdl_excc_amt", None))
+        if settled is not None:
+            orderable_cash.append(settled)
         total = _money_krw(getattr(head, "tot_evlu_amt", None))
-    return Balance(total_asset=total, cash=cash, positions=positions, raw=raw)
+    return Balance(
+        total_asset=total, cash=cash, orderable_cash=orderable_cash,
+        positions=positions, raw=raw,
+    )
 
 
 # ─── Orders ──────────────────────────────────────────
