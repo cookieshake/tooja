@@ -170,6 +170,55 @@ async def test_domestic_balance_attaches_orderable_cash(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_domestic_balance_orderable_cash_falls_back_to_d2_when_tr_blocked(monkeypatch):
+    # 퇴직연금: inquire-psbl-order is unavailable → _domestic_orderable_cash returns None.
+    # The mapper's D+2 baseline must survive so orderable_cash is not empty.
+    client = KisAccountClient.__new__(KisAccountClient)
+    client._broker = object()
+
+    class _Out2:
+        dnca_tot_amt = "0"
+        prvs_rcdl_excc_amt = "14560"
+        tot_evlu_amt = "25567380"
+
+    async def fake_iterate(self):
+        return ([], [_Out2()])
+
+    async def fake_orderable(self):
+        return None  # TR blocked on pension accounts
+
+    monkeypatch.setattr(KisAccountClient, "_iterate_balance", fake_iterate)
+    monkeypatch.setattr(KisAccountClient, "_domestic_orderable_cash", fake_orderable)
+
+    bal = await client._domestic_balance()
+    assert {m.currency: m.amount for m in bal.orderable_cash}[Currency.KRW] == Decimal("14560")
+
+
+@pytest.mark.asyncio
+async def test_domestic_balance_nrcvb_overrides_d2_baseline(monkeypatch):
+    # When the TR succeeds, nrcvb_buy_amt (order-adjusted) beats the D+2 baseline.
+    client = KisAccountClient.__new__(KisAccountClient)
+    client._broker = object()
+
+    class _Out2:
+        dnca_tot_amt = "0"
+        prvs_rcdl_excc_amt = "14560"  # D+2 baseline
+        tot_evlu_amt = "25567380"
+
+    async def fake_iterate(self):
+        return ([], [_Out2()])
+
+    async def fake_orderable(self):
+        return Money(amount=Decimal("999999"), currency=Currency.KRW)  # nrcvb override
+
+    monkeypatch.setattr(KisAccountClient, "_iterate_balance", fake_iterate)
+    monkeypatch.setattr(KisAccountClient, "_domestic_orderable_cash", fake_orderable)
+
+    bal = await client._domestic_balance()
+    assert {m.currency: m.amount for m in bal.orderable_cash}[Currency.KRW] == Decimal("999999")
+
+
+@pytest.mark.asyncio
 async def test_domestic_orderable_cash_degrades_on_broker_error(monkeypatch):
     from tooja.core.errors import BrokerAPIError
 
